@@ -73,11 +73,17 @@ static struct title_category g_categories[7] = {
 void free_title(struct title* title) {
 	free(title->tmd_view);
 	free(title->ticket_views);
+
+	title->tmd_view = NULL;
+	title->ticket_views = NULL;
 }
 
 void free_category(struct title_category* category) {
 	for (struct title* title = category->title_list; title - category->title_list < category->num_titles; title++)
 		free_title(title);
+
+	free(category->title_list);
+	category->title_list = NULL;
 }
 
 void free_all_categories(void) {
@@ -654,6 +660,7 @@ int main(int argc, char* argv[]) {
 			} break;
 
 			case WPAD_BUTTON_B: {
+				free_all_categories();
 				return 0;
 			} break;
 		}
