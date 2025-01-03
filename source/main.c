@@ -130,7 +130,7 @@ int try_name_ios(struct title* title) {
 	ret = fd = ISFS_Open(filepath, 1);
 	if (ret < 0) {
 		print_error("ISFS_Open(%016llx/%08x.app)", ret, title->id, content);
-		goto not_a_cios; // No choice
+		goto not_a_cios;
 	}
 
 	ret = ISFS_Read(fd, data, sizeof(data));
@@ -533,7 +533,8 @@ void manage_title_menu(struct title* title) {
 				return;
 			} break;
 
-			case WPAD_BUTTON_B: {
+			case WPAD_BUTTON_B:
+			case WPAD_BUTTON_HOME: {
 				return;
 			} break;
 		}
@@ -604,7 +605,8 @@ void manage_category_menu(struct title_category* cat) {
 				wait_button(0);
 			} break;
 
-			case WPAD_BUTTON_B: {
+			case WPAD_BUTTON_B:
+			case WPAD_BUTTON_HOME: {
 				return;
 			} break;
 
@@ -616,10 +618,6 @@ void manage_category_menu(struct title_category* cat) {
 int main(int argc, char* argv[]) {
 	int ret;
 	int cursor = 0;
-
-	initpads();
-
-	CON_GetMetrics(&conX, &conY);
 
 	ret = ISFS_Initialize();
 	if (ret < 0) {
@@ -659,7 +657,8 @@ int main(int argc, char* argv[]) {
 				manage_category_menu(&g_categories[cursor]);
 			} break;
 
-			case WPAD_BUTTON_B: {
+			case WPAD_BUTTON_B:
+			case WPAD_BUTTON_HOME: {
 				free_all_categories();
 				return 0;
 			} break;

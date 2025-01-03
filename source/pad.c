@@ -84,15 +84,15 @@ void* kbd_thread(void* userp) {
 	return NULL;
 }
 
-// __attribute__((constructor))
+__attribute__((constructor))
 void initpads() {
 	WPAD_Init();
 	PAD_Init();
 	USB_Initialize();
 	USBKeyboard_Initialize();
 
-	// kbd_thread_should_run = true;
-	// LWP_CreateThread(&kbd_thread_hndl, kbd_thread, 0, 0, 0x800, 0x7F);
+	kbd_thread_should_run = true;
+	LWP_CreateThread(&kbd_thread_hndl, kbd_thread, 0, 0, 0x800, 0x7F);
 }
 
 void scanpads() {
