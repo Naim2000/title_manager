@@ -10,7 +10,8 @@
 
 static void* xfb = NULL;
 static GXRModeObj vmode = {};
-static int conX, conY;
+
+int conX, conY;
 
 // from LoadPriiloader
 __attribute__((constructor))
@@ -42,8 +43,8 @@ void init_video() {
 	VIDEO_WaitVSync();
 
 	// Initialise the console
-	CON_InitEx(&vmode, (vmode.viWidth + vmode.viXOrigin - CONSOLE_WIDTH) / 2,
-					   (vmode.viHeight + vmode.viYOrigin - CONSOLE_HEIGHT) / 2,
+	CON_InitEx(&vmode, (vmode.viWidth - CONSOLE_WIDTH) / 2,
+					   (vmode.viHeight - CONSOLE_HEIGHT) / 2,
 					   CONSOLE_WIDTH, CONSOLE_HEIGHT);
 	CON_GetMetrics(&conX, &conY);
 

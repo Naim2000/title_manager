@@ -84,14 +84,15 @@ void* kbd_thread(void* userp) {
 	return NULL;
 }
 
+// __attribute__((constructor))
 void initpads() {
 	WPAD_Init();
 	PAD_Init();
 	USB_Initialize();
 	USBKeyboard_Initialize();
 
-	kbd_thread_should_run = true;
-	LWP_CreateThread(&kbd_thread_hndl, kbd_thread, 0, 0, 0x4000, 0x7F);
+	// kbd_thread_should_run = true;
+	// LWP_CreateThread(&kbd_thread_hndl, kbd_thread, 0, 0, 0x800, 0x7F);
 }
 
 void scanpads() {
@@ -115,6 +116,7 @@ void scanpads() {
 	if (gcn_down & PAD_BUTTON_RIGHT) pad_buttons |= WPAD_BUTTON_RIGHT;
 }
 
+__attribute__((destructor))
 void stoppads() {
 	WPAD_Shutdown();
 
