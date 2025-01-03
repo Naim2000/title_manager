@@ -1,14 +1,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <ctype.h>
 #include <ogc/es.h>
 #include <gccore.h>
 
+#include "converter/converter.h"
+#include "libpatcher/libpatcher.h"
+
 #include "video.h"
 #include "pad.h"
-#include "converter/converter.h"
 
 // snake case for snake year !!!
 
@@ -298,7 +301,7 @@ int populate_title_categories(void) {
 			case 0x00000001: { // System titles
 				// uint16_t revision = temp.tmd_view->title_version;
 				switch (tid_lo) {
-					case 0x00000000: strcpy(temp.name, "<Superuser ticket>");
+					case 0x00000000: strcpy(temp.name, "<Superuser ticket>"); break;
 					case 0x00000001: strcpy(temp.name, "<boot2 (not really)>"); break;
 					case 0x00000002: strcpy(temp.name, "Wii System Menu"); break; // TODO: Print the system menu version here cause we can do that
 					case 0x00000100: strcpy(temp.name, "BC"); break;
@@ -326,7 +329,7 @@ int populate_title_categories(void) {
 					case 0x4843434A: strcpy(temp.name, "Set Personal Data"); break;
 
 					default: {
-						if (try_name_save_banner(&temp) != 0)
+						if (try_name_save_banner(&temp) < 0)
 							strcpy(temp.name, "<unknown>");
 					} break;
 				}
@@ -334,7 +337,7 @@ int populate_title_categories(void) {
 
 			default: {
 				// TODO: Parse the channel's banner here.
-				if (try_name_save_banner(&temp) != 0)
+				if (try_name_save_banner(&temp) < 0)
 					sprintf(temp.name, "parse %016llx's banner here", tid);
 			} break;
 		}
@@ -472,6 +475,7 @@ int uninstall_title(struct title* title) {
 	}
 
 	puts("OK!");
+	return 0;
 
 no_touchy:
 	printf("Please do not uninstall \"%s\"!\n", title->name);
@@ -505,7 +509,8 @@ void manage_title_menu(struct title* title) {
 
 		switch (wait_button(WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_UP | WPAD_BUTTON_DOWN | WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT | WPAD_BUTTON_HOME)) {
 			case WPAD_BUTTON_UP: {
-				cursor = (cursor - 1) % num_options;
+				if (!cursor--)
+					cursor = num_options - 1;
 			} break;
 
 			case WPAD_BUTTON_DOWN: {
@@ -615,9 +620,20 @@ void manage_category_menu(struct title_category* cat) {
 	}
 }
 
+extern void __exception_setreload(int us);
+
 int main(int argc, char* argv[]) {
 	int ret;
 	int cursor = 0;
+
+	__exception_setreload(5);
+
+	if (!apply_patches()) {
+		sleep(5);
+		return -1;;
+	}
+
+	initpads();
 
 	ret = ISFS_Initialize();
 	if (ret < 0) {
@@ -638,7 +654,8 @@ int main(int argc, char* argv[]) {
 
 		switch (wait_button(WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_UP | WPAD_BUTTON_DOWN | WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT | WPAD_BUTTON_HOME)) {
 			case WPAD_BUTTON_UP: {
-				cursor = (cursor - 1) % 7;
+				if (!cursor--)
+					cursor = 7 - 1;
 			} break;
 
 			case WPAD_BUTTON_DOWN: {
@@ -657,7 +674,7 @@ int main(int argc, char* argv[]) {
 				manage_category_menu(&g_categories[cursor]);
 			} break;
 
-			case WPAD_BUTTON_B:
+			// case WPAD_BUTTON_B:
 			case WPAD_BUTTON_HOME: {
 				free_all_categories();
 				return 0;
@@ -671,7 +688,7 @@ int main(int argc, char* argv[]) {
 }
 
 // __attribute__((destructor))
-void __anykey_to_exit(void) {
+void __reset_to_exit(void) {
 	puts("Press RESET to exit.");
 	while (! SYS_ResetButtonDown())
 		;

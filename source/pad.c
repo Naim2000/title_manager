@@ -84,7 +84,7 @@ void* kbd_thread(void* userp) {
 	return NULL;
 }
 
-__attribute__((constructor))
+// __attribute__((constructor))
 void initpads() {
 	WPAD_Init();
 	PAD_Init();
