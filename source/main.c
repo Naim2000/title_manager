@@ -2,16 +2,20 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
 #include <stdint.h>
 #include <ctype.h>
 #include <ogc/es.h>
 #include <gccore.h>
+#include <fat.h>
 
 #include "converter/converter.h"
 #include "libpatcher/libpatcher.h"
 
+#include "common.h"
 #include "video.h"
 #include "pad.h"
+#include "save.h"
 
 // snake case for snake year !!!
 
@@ -92,12 +96,6 @@ void free_category(struct title_category* category) {
 void free_all_categories(void) {
 	for (int i = 0; i < 7; i++)
 		free_category(&g_categories[i]);
-}
-
-#define print_error(func, ret, ...) do { fprintf(stderr, "%s():%i : " func " failed (ret=%i)\n", __FUNCTION__, __LINE__, ##__VA_ARGS__, ret); } while (0);
-
-void* memalign32(size_t size) {
-	return aligned_alloc(0x20, __builtin_align_up(size, 0x20));
 }
 
 bool get_content0(tmd_view* view, uint32_t* cid) {
@@ -485,11 +483,45 @@ no_touchy:
 	return -1017;
 }
 
+int dump_title_save(struct title* title) {
+	FILE* fp = NULL;
+	char  filename[32];
+
+	if (!(
+		title->tid_hi == 0x00010000 ||
+		title->tid_hi == 0x00010001 ||
+		title->tid_hi == 0x00010004
+	)) {
+		puts("Does this even have a proper save?");
+		return -1;
+	}
+
+	if (memchr(title->id_short, '.', 4)) {
+		puts("id_short might have had an unprintable character");
+		return -2;
+	}
+
+	sprintf(filename, "%.4s-data.bin", title->id_short);
+	fp = fopen(filename, "wb");
+	if (!fp) {
+		print_error("fopen(%s)", errno, filename);
+		return -3;
+	}
+
+	int ret = export_save(title->id, fp);
+	fclose(fp);
+	if (ret < 0) {
+		// print_error("export_save", ret);
+	}
+
+	return ret;
+}
+
 void manage_title_menu(struct title* title) {
 	int                  cursor = 0;
 	const int       num_options = 4;
 	const char* const options[] = { "Uninstall this title",
-	                                "Dump save data (data.bin) (X)",
+	                                "Dump save data (data.bin)",
 	                                "Dump save data (extract) (X)",
 	                                "Dump title (.wad) (X)" };
 
@@ -529,6 +561,9 @@ void manage_title_menu(struct title* title) {
 				switch (cursor) {
 					case 0: {
 						uninstall_title(title);
+					} break;
+					case 1: {
+						dump_title_save(title);
 					} break;
 					default: {
 						puts("Unimplemented. Sorry.");
@@ -640,6 +675,8 @@ int main(int argc, char* argv[]) {
 		print_error("ISFS_Initialize", ret);
 		return ret;
 	}
+
+	fatInitDefault();
 
 	populate_title_categories();
 
