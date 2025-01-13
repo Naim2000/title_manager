@@ -339,7 +339,7 @@ int export_save(uint64_t title_id, FILE* fp) {
 	if (ret < 0)
 		return ret;
 
-	memcpy(save.header.md5_sum, md5_blanker, sizeof(md5_sum));
+	memcpy(save.header.md5_sum, md5_blanker, sizeof(save.header.md5_sum));
 	mbedtls_md5_ret(save.encrypted_data, sizeof(save.encrypted_data), (unsigned char*) save.header.md5_sum);
 
 	memcpy(iv, sd_initial_iv, sizeof(sd_initial_iv));
