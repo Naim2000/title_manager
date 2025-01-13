@@ -198,6 +198,12 @@ static int write_file_table(const char* data_path, struct file_table* file_table
 	return 0;
 }
 
+static void free_file_table(struct file_table* table) {
+	free(table->entries);
+	table->entries = NULL;
+	table->num_entries = 0;
+}
+
 int export_save(uint64_t title_id, FILE* fp) {
 	int              ret;
 	uint64_t         my_tid = -1;
@@ -375,19 +381,20 @@ int export_save(uint64_t title_id, FILE* fp) {
 
 	if (!fwrite(&bk_header, sizeof(struct bk_header), 1, fp)) {
 		print_error("fwrite", errno);
-		return -errno;
+		ret = -errno;
+		goto foiled;
 	}
 
 	ret = write_file_table(data_path, &table, &sha, fp);
 	if (ret < 0)
-		return ret;
+		goto foiled;
 
 	mbedtls_sha1_finish_ret(&sha, (unsigned char *)hash);
 
 	ret = ES_GetDeviceCert((u8 *)&ng_certificate);
 	if (ret < 0) {
 		print_error("ES_GetDeviceCert", ret);
-		return ret;
+		goto foiled;
 	}
 
 	ret = ES_Sign((u8 *)hash, sizeof(hash), ap_signature, (u8 *)&ap_certificate);
@@ -398,11 +405,18 @@ int export_save(uint64_t title_id, FILE* fp) {
 
 	if (!fwrite(ap_signature,    sizeof(ap_signature),   1, fp) ||
 		!fwrite(&ng_certificate, sizeof(ng_certificate), 1, fp) ||
-		!fwrite(&ap_certificate, sizeof(ap_certificate), 1, fp))
+		!fwrite(&ap_certificate, sizeof(ap_certificate), 1, fp) ||
+		!fwrite(table.entries,   0x80,                   1, fp)) // Filler cause idk what this 128 byte padding is for
 	{
 		print_error("fwrite", errno);
-		return -errno;
+		ret = -errno;
+		goto foiled;
 	}
 
+	free_file_table(&table);
 	return 0;
+
+foiled:
+	free_file_table(&table);
+	return ret;
 }
