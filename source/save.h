@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <assert.h>
+#include <ogc/es.h>
 #include <mbedtls/md5.h>
 #include "converter/converter.h"
 
@@ -8,17 +9,23 @@
 static const uint32_t sd_initial_iv[4] = { 0x216712e6, 0xaa1f689f, 0x95c5a223, 0x24dc6a98 };
 static const uint32_t   md5_blanker[4] = { 0x0e653781, 0x99be4517, 0xab06ec22, 0x451a5793 };
 
+struct ecc_cert {
+	sig_ecdsa  signature;
+	cert_ecdsa certificate;
+};
+CHECK_STRUCT_SIZE(struct ecc_cert, 0x180);
+
 // gonna need this one from you dolphin-emu
 enum {
 	FULL_BNR_MIN = 0x72a0,  // BNR_SZ + 1*ICON_SZ
 	FULL_BNR_MAX = 0xF0A0,  // BNR_SZ + 8*ICON_SZ
 	BK_LISTED_SZ = 0x70,    // Size before rounding to nearest block
 	SIG_SZ = 0x40,
-	ECC_CERT_SZ = 0x180,
-	FULL_CERT_SZ = SIG_SZ + (2 * ECC_CERT_SZ),
+	FULL_CERT_SZ = SIG_SZ + (2 * sizeof(struct ecc_cert)),
 
 	BK_HDR_MAGIC = 0x426B0001,
-	FILE_HDR_MAGIC = 0x03ADF17E
+	FILE_HDR_MAGIC = 0x03ADF17E,
+	WIBN_MAGIC = 0x5749424E,
 };
 
 #pragma pack(push, 1)
@@ -70,13 +77,13 @@ struct bk_header {
 	uint32_t device_id;
 	uint32_t num_files;
 	uint32_t total_files_size;
-	uint32_t unknown[2];
+	uint32_t tmd_size;
+	uint32_t total_contents_size;
 	uint32_t total_size;
-	uint8_t  unknown2[0x40];
+	uint8_t  included_contents[0x40];
 	uint64_t title_id;
 	uint8_t  mac_address[6];
-	uint8_t  padding[2];
-	uint8_t  trail[0x10];
+	uint8_t  padding[0x12];
 
 	struct file_header files[];
 };
