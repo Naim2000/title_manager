@@ -21,7 +21,7 @@ enum {
 	FULL_BNR_MAX = 0xF0A0,  // BNR_SZ + 8*ICON_SZ
 	BK_LISTED_SZ = 0x70,    // Size before rounding to nearest block
 	SIG_SZ = 0x40,
-	FULL_CERT_SZ = SIG_SZ + (2 * sizeof(struct ecc_cert)),
+	FULL_CERT_SZ = SIG_SZ + (2 * sizeof(struct ecc_cert)) + 0x80, // ??
 
 	BK_HDR_MAGIC = 0x426B0001,
 	FILE_HDR_MAGIC = 0x03ADF17E,

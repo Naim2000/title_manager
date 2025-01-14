@@ -304,10 +304,20 @@ int export_save(uint64_t title_id, FILE* fp) {
 		free(s_tmd);
 		free(s_tik);
 		free(s_certs);
-		// if (ret < 0) {
+		 if (ret < 0) {
+			 my_tid = 0;
 			// print_error("ES_Identify(%016llx)", ret, my_tid);
 			// return ret;
-		// }
+		}
+
+		ES_GetTitleID(&my_tid);
+	}
+
+	if (my_tid == 0x0000000100000002) {
+		ret = ES_SetUID(title_id);
+		if (ret < 0) {
+			print_error("ES_SetUID", ret);
+		}
 	}
 
 	ret = ES_GetDeviceID(&device_id);

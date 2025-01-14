@@ -15,12 +15,13 @@
 #include "common.h"
 #include "video.h"
 #include "pad.h"
+#include "menu.h"
 #include "ncd.h"
 #include "save.h"
 
 // snake case for snake year !!!
 
-struct title {
+typedef struct title {
 	union {
 		uint64_t id;
 		struct {
@@ -32,16 +33,16 @@ struct title {
 	tmd_view* tmd_view;
 	tikview*  ticket_views;
 	uint32_t  num_tickets;
-};
+} title_t;
 
-struct title_category {
+typedef struct title_category {
 	uint32_t      tid_hi;
 	char          name[64];
 	unsigned      num_titles;
 	struct title* title_list;
-};
+} title_category_t;
 
-static struct title_category g_categories[7] = {
+static title_category_t g_categories[] = {
 	{
 		.tid_hi = 0x00000001,
 		.name   = "System titles"
@@ -49,12 +50,12 @@ static struct title_category g_categories[7] = {
 
 	{
 		.tid_hi = 0x00010000,
-		.name   = "Disc-based games",
+		.name   = "Disc titles",
 	},
 
 	{
 		.tid_hi = 0x00010001,
-		.name   = "Downloaded channels",
+		.name   = "Downloadable channels",
 	},
 
 	{
@@ -64,7 +65,7 @@ static struct title_category g_categories[7] = {
 
 	{
 		.tid_hi = 0x00010004,
-		.name   = "Disc-based games with channels",
+		.name   = "Disc titles with channels",
 	},
 
 	{
@@ -77,7 +78,7 @@ static struct title_category g_categories[7] = {
 		.name   = "Hidden titles"
 	},
 };
-const unsigned g_num_categories = (sizeof(g_categories) / sizeof(struct title_category));
+const unsigned g_num_categories = (sizeof(g_categories) / sizeof(title_category_t));
 
 void free_title(struct title* title) {
 	free(title->tmd_view);
@@ -87,8 +88,8 @@ void free_title(struct title* title) {
 	title->ticket_views = NULL;
 }
 
-void free_category(struct title_category* category) {
-	for (struct title* title = category->title_list; title - category->title_list < category->num_titles; title++)
+void free_category(title_category_t* category) {
+	for (title_t* title = category->title_list; title - category->title_list < category->num_titles; title++)
 		free_title(title);
 
 	free(category->title_list);
@@ -113,7 +114,7 @@ bool get_content0(tmd_view* view, uint32_t* cid) {
 	return false;
 }
 
-int try_name_ios(struct title* title) {
+int try_name_ios(title_t* title) {
 	uint32_t slot     = title->tid_lo;
 	uint16_t revision = title->tmd_view->title_version;
 	uint32_t content  = 0;
@@ -127,7 +128,8 @@ int try_name_ios(struct title* title) {
 		return 2;
 	}
 
-	get_content0(title->tmd_view, &content);
+	if (!get_content0(title->tmd_view, &content))
+		goto not_a_cios;
 
 	sprintf(filepath, "/title/%08x/%08x/content/%08x.app", title->tid_hi, slot, content);
 	ret = fd = ISFS_Open(filepath, 1);
@@ -233,33 +235,26 @@ int populate_title_categories(void) {
 	}
 
 	for (int i = 0; i < titles_cnt; i++) {
-		uint64_t tid                  = titles_raw[i]; // i[titles_raw] ???
-		uint32_t tid_hi               = tid >> 32;
-		uint32_t tid_lo               = tid & 0xFFFFFFFF;
-		struct title_category* target = NULL;
-		struct title             temp = {};
-		uint32_t tmd_view_size        = 0;
-
-		memset(&temp, 0, sizeof(temp));
+		title_category_t* target = NULL;
+		title_t             temp = { .id = titles_raw[i] };
+		uint32_t   tmd_view_size = 0;
 
 		for (int j = 0; j < g_num_categories; j++) {
-			if (g_categories[j].tid_hi == tid_hi) {
+			if (g_categories[j].tid_hi == temp.tid_hi) {
 				target = &g_categories[j];
 				break;
 			}
 		}
 
 		if (!target) {
-			fprintf(stderr, "Title %016llx has unknown type %#010x\n", tid, tid_hi);
+			fprintf(stderr, "Title %016llx has unknown type %#010x\n", temp.id, temp.tid_hi);
 			continue;
 		}
 
-		temp.id = tid;
-
 		// 1: Get it's TMD view.
-		ret = ES_GetTMDViewSize(tid, &tmd_view_size);
+		ret = ES_GetTMDViewSize(temp.id, &tmd_view_size);
 		if (ret < 0) {
-			print_error("ES_GetTMDViewSize(%016llx)", ret, tid);
+			print_error("ES_GetTMDViewSize(%016llx)", ret, temp.id);
 			continue;
 		}
 
@@ -269,16 +264,16 @@ int populate_title_categories(void) {
 			continue;
 		}
 
-		ret = ES_GetTMDView(tid, (unsigned char*)temp.tmd_view, tmd_view_size);
+		ret = ES_GetTMDView(temp.id, (u8 *)temp.tmd_view, tmd_view_size);
 		if (ret < 0) {
-			print_error("ES_GetTMDView(%016llx)", ret, tid);
+			print_error("ES_GetTMDView(%016llx)", ret, temp.id);
 			goto we_gotta_go_bald;
 		}
 
 		// 2: Get it's ticket view(s) now.
-		ret = ES_GetNumTicketViews(tid, &temp.num_tickets);
+		ret = ES_GetNumTicketViews(temp.id, &temp.num_tickets);
 		if (ret < 0) {
-			print_error("ES_GetNumTicketViews(%016llx)", ret, tid);
+			print_error("ES_GetNumTicketViews(%016llx)", ret, temp.id);
 			goto we_gotta_go_bald;
 		}
 
@@ -289,7 +284,7 @@ int populate_title_categories(void) {
 				goto we_gotta_go_bald;
 			}
 
-			ret = ES_GetTicketViews(tid, temp.ticket_views, temp.num_tickets);
+			ret = ES_GetTicketViews(temp.id, temp.ticket_views, temp.num_tickets);
 			if (ret < 0) {
 				print_error("ES_GetTicketViews", ret);
 				goto we_gotta_go_bald;
@@ -297,10 +292,10 @@ int populate_title_categories(void) {
 		}
 
 		// 3: Get a name for it.
-		switch (tid_hi) {
+		switch (temp.tid_hi) {
 			case 0x00000001: { // System titles
 				// uint16_t revision = temp.tmd_view->title_version;
-				switch (tid_lo) {
+				switch (temp.tid_lo) {
 					case 0x00000000: strcpy(temp.name, "<Superuser ticket>"); break;
 					case 0x00000001: strcpy(temp.name, "<boot2 (not really)>"); break;
 					case 0x00000002: strcpy(temp.name, "Wii System Menu"); break; // TODO: Print the system menu version here cause we can do that
@@ -309,7 +304,7 @@ int populate_title_categories(void) {
 					case 0x00000200: strcpy(temp.name, "BC-NAND"); break;
 					case 0x00000201: strcpy(temp.name, "BC-WFS"); break;
 					default:
-						if (tid_lo < 0x100)
+						if (temp.tid_lo < 0x100)
 							try_name_ios(&temp);
 						else
 							strcpy(temp.name, "<unknown>");
@@ -317,14 +312,14 @@ int populate_title_categories(void) {
 			} break;
 
 			case 0x00010008: { // Hidden titles.
-				switch (tid_lo) {
+				switch (temp.tid_lo) {
 					case 0x48414B45:
 					case 0x48414B50:
-					case 0x48414B4A: sprintf(temp.name, "End-user license agreement (%c)", (char)(tid_lo & 0xFF)); break;
+					case 0x48414B4A: sprintf(temp.name, "End-user license agreement (%c)", (char)(temp.tid_lo & 0xFF)); break;
 
 					case 0x48414C45:
 					case 0x48414C50:
-					case 0x48414C4A: sprintf(temp.name, "Region Select (%c)", (char)(tid_lo & 0xFF)); break;
+					case 0x48414C4A: sprintf(temp.name, "Region Select (%c)", (char)(temp.tid_lo & 0xFF)); break;
 
 					case 0x4843434A: strcpy(temp.name, "Set Personal Data"); break;
 
@@ -338,21 +333,21 @@ int populate_title_categories(void) {
 			default: {
 				// TODO: Parse the channel's banner here.
 				if (try_name_save_banner(&temp) < 0)
-					sprintf(temp.name, "parse %016llx's banner here", tid);
+					sprintf(temp.name, "parse %08x's banner here", temp.tid_lo);
 			} break;
 		}
 
 		// 4: Get a short name for it.
-		if (tid_hi == 0x00000001) {
+		if (temp.tid_hi == 0x00000001) {
 			memset(temp.id_short, '-', 4);
 		} else for (int j = 0; j < 4; j++) {
-			char c = ((const char*)&tid_lo)[j];
+			char c = ((const char *)&temp.tid_lo)[j];
 			temp.id_short[j] = (c > 0x20 && c < 0x7F) ? c : '.';
 		}
 
 
 		// 5: Actually put it in the category. Have a good pat on the back, %016llx.
-		struct title* tmp_list = reallocarray(target->title_list, target->num_titles + 1, sizeof(struct title));
+		title_t* tmp_list = reallocarray(target->title_list, target->num_titles + 1, sizeof(title_t));
 		if (!tmp_list) {
 			print_error("memory allocation", 0);
 			break;
@@ -370,34 +365,20 @@ we_gotta_go_bald:
 
 	// Lastly, let's do a bit of sorting
 	for (int i = 0; i < g_num_categories; i++) {
-		struct title_category* cat = &g_categories[i];
+		title_category_t* cat = &g_categories[i];
 
-		qsort(cat->title_list, cat->num_titles, sizeof(struct title), cmp_title);
+		qsort(cat->title_list, cat->num_titles, sizeof(title_t), cmp_title);
 	}
 
 	return 0;
 }
 
-void print_this_dumb_line(void) {
-	static char line[100];
-	if (!*line) memset(line, 0xc4, sizeof(line));
-
-	printf("%.*s", conX, line);
-}
-
-void print_this_dumb_header(void) {
-	clear();
-	puts("title_manager_by_thepikachugamer");
-	puts("happy snake year 2025!!!!!");
-	print_this_dumb_line();
-}
-
-struct title* find_title(uint64_t title_id) {
+title_t* find_title(uint64_t title_id) {
 	uint32_t tid_hi = (uint32_t)(title_id >> 32);
 
-	for (struct title_category* cat = g_categories; cat - g_categories < g_num_categories; cat++) {
+	for (title_category_t* cat = g_categories; cat - g_categories < g_num_categories; cat++) {
 		if (cat->tid_hi == tid_hi) {
-			for (struct title* title = cat->title_list; title - cat->title_list < cat->num_titles; title++) {
+			for (title_t* title = cat->title_list; title - cat->title_list < cat->num_titles; title++) {
 				if (title->id == title_id)
 					return title;
 			}
@@ -409,7 +390,7 @@ struct title* find_title(uint64_t title_id) {
 	return NULL;
 }
 
-int uninstall_title(struct title* title) {
+int uninstall_title(const title_t* title) {
 	const char* no_touchy_reason = NULL;
 
 	if (title->tid_hi == 0x00000001) {
@@ -429,7 +410,7 @@ int uninstall_title(struct title* title) {
 			goto no_touchy;
 		}
 
-		struct title* wii_system_menu = find_title(0x0000000100000002);
+		title_t* wii_system_menu = find_title(0x0000000100000002);
 		if (!wii_system_menu) {
 			no_touchy_reason = "I can't find the Wii System Menu...?";
 			goto no_touchy;
@@ -479,7 +460,7 @@ no_touchy:
 	return -1017;
 }
 
-int dump_title_save(struct title* title) {
+int dump_title_save(const title_t* title) {
 	FILE* fp = NULL;
 	char  filename[32];
 
@@ -514,7 +495,23 @@ int dump_title_save(struct title* title) {
 	return ret;
 }
 
-void manage_title_menu(struct title* title) {
+void print_title_header(const void* p) {
+	const title_t* title = p;
+
+	print_this_dumb_header();
+	printf("Name:        %s\n", title->name);
+	printf("Title ID:    %08x-%08x (%.4s)\n", title->tid_hi, title->tid_lo, title->id_short);
+	// printf("Region:      %#04hhx\n", title->tmd_view->);
+	printf("Revision:    v%u (%#hx)\n", title->tmd_view->title_version, title->tmd_view->title_version);
+	if (title->tmd_view->sys_version >> 32 == 0x00000001)
+		printf("IOS version: IOS%u\n", (uint32_t)title->tmd_view->sys_version);
+
+	print_this_dumb_line();
+}
+
+void manage_title_menu(const void* p) {
+	const title_t* title = p;
+
 	int                  cursor = 0;
 	const int       num_options = 4;
 	const char* const options[] = { "Uninstall this title",
@@ -523,14 +520,7 @@ void manage_title_menu(struct title* title) {
 	                                "Dump title (.wad) (X)" };
 
 	while (true) {
-		print_this_dumb_header();
-		printf("Name:        %s\n", title->name);
-		printf("Title ID:    %016llx (%.4s)\n", title->id, title->id_short);
-		// printf("Region:      %#04hhx\n", title->tmd_view->);
-		printf("Revision:    %u (%#hx)\n", title->tmd_view->title_version, title->tmd_view->title_version);
-		if (title->tmd_view->sys_version >> 32 == 0x00000001)
-			printf("IOS version: IOS%u\n", (uint32_t)title->tmd_view->sys_version);
-		print_this_dumb_line();
+		print_title_header(title);
 
 		for (int i = 0; i < num_options; i++)
 			printf("	%3s %s\n", (cursor == i) ? " >>" : "", options[i]);
@@ -568,6 +558,9 @@ void manage_title_menu(struct title* title) {
 					} break;
 				}
 
+
+				puts("Press any button to continue...");
+				wait_button(0);
 				return;
 			} break;
 
@@ -579,89 +572,53 @@ void manage_title_menu(struct title* title) {
 	}
 }
 
-void manage_category_menu(struct title_category* cat) {
-	int cursor = 0;
-	int start  = 0;
-	int count  = cat->num_titles;
-	int max    = conY - 8;
-	// int style  = 0;
+const char* name_title(const void* p, char buffer[256]) {
+	const title_t* title = p;
 
+	if (title->tid_hi == 0x00000001)
+		snprintf(buffer, 256, "[%08x] - %.128s", title->tid_lo, title->name);
+	else
+		snprintf(buffer, 256, "[%08x] (%.4s) - %.128s", title->tid_lo, title->id_short, title->name);
 
-	while (true) {
-		print_this_dumb_header();
-		printf("Selected category - %08x (%s)\n\n", cat->tid_hi, cat->name);
+	return buffer;
+}
 
-		if (!cat->num_titles) {
-			puts("Nothing's here.");
-			wait_button(0);
-			return;
-		}
+void print_category_header(const void* p, int cursor, int count) {
+	const title_category_t* cat = p;
 
-		for (int i = start; i - start < max; i++) {
-			struct title* title = &cat->title_list[i];
+	print_this_dumb_header();
+	printf("Selected Category - [%08x] %s :: Item %u out of %u\n\n", cat->tid_hi, cat->name, cursor + 1, count);
+}
 
-			if (i >= count) {
-				putchar('\n');
-				continue;
-			}
+void manage_category_menu(const void* p) {
+	const title_category_t* cat = p;
 
-			if (cat->tid_hi == 0x00000001) {
-				printf("%3s [%08x] - %.*s\n", (i == cursor) ? " >>" : "", title->tid_lo, conX - 17, title->name);
-			} else {
-				printf("%3s [%08x] (%.4s) - %.*s\n", (i == cursor) ? " >>" : "", title->tid_lo, title->id_short, conX - 25, title->name);
-			}
-		}
+	menu_item_list_t title_list = {
+		.print_header = print_category_header,
+		.header_ptr   = cat,
+		.items        = cat->title_list,
+		.item_size    = sizeof(title_t),
+		.num_items    = cat->num_titles,
+		.max_items    = conY - 8,
+		.get_name     = name_title,
+		.select       = manage_title_menu,
+	};
 
-		switch (wait_button(WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_UP | WPAD_BUTTON_DOWN | WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT | WPAD_BUTTON_HOME)) {
-			case WPAD_BUTTON_DOWN: {
-				if (cursor >= (count - 1))
-					start = cursor = 0;
+	if (cat->num_titles)
+		ItemMenu(&title_list);
+}
 
-				else if ((++cursor - start) >= max)
-					start++;
-			} break;
+const char* name_category(const void* p, char buffer[256]) {
+	const title_category_t* cat = p;
 
-			case WPAD_BUTTON_UP: {
-				if (cursor <= 0) {
-					cursor = count - 1;
-					if (cursor >= max)
-						start = 1 + cursor - max;
-				}
-
-				else if (--cursor < start)
-					start--;
-
-			} break;
-
-			case WPAD_BUTTON_RIGHT: {
-				cursor = count - 1;
-			} break;
-
-			case WPAD_BUTTON_LEFT: {
-				cursor = 0;
-			} break;
-
-			case WPAD_BUTTON_A: {
-				manage_title_menu(&cat->title_list[cursor]);
-				puts("Press any button to continue...");
-				wait_button(0);
-			} break;
-
-			case WPAD_BUTTON_B:
-			case WPAD_BUTTON_HOME: {
-				return;
-			} break;
-
-
-		}
-	}
+	snprintf(buffer, 256, "[%08x] %s (%u)", cat->tid_hi, cat->name, cat->num_titles);
+	return buffer;
 }
 
 extern void __exception_setreload(int seconds);
 
 int main(int argc, char* argv[]) {
 	int ret;
-	int cursor = 0;
 
 	__exception_setreload(5);
 
@@ -684,46 +641,16 @@ int main(int argc, char* argv[]) {
 
 	populate_title_categories();
 
-	while (true) {
-		print_this_dumb_header();
+	menu_item_list_t category_list = {
+		.items        = g_categories,
+		.item_size    = sizeof(title_category_t),
+		.num_items    = g_num_categories,
+		.get_name     = name_category,
+		.select       = manage_category_menu,
+	};
 
-		for (int i = 0; i < g_num_categories; i++) {
-			struct title_category* cat = &g_categories[i];
+	ItemMenu(&category_list);
 
-			printf("%3s [%08x] %s (%u)\n", (i == cursor) ? " >>" : "", cat->tid_hi, cat->name, cat->num_titles);
-		}
-
-		switch (wait_button(WPAD_BUTTON_A | WPAD_BUTTON_B | WPAD_BUTTON_UP | WPAD_BUTTON_DOWN | WPAD_BUTTON_LEFT | WPAD_BUTTON_RIGHT | WPAD_BUTTON_HOME)) {
-			case WPAD_BUTTON_UP: {
-				if (!cursor--)
-					cursor = g_num_categories - 1;
-			} break;
-
-			case WPAD_BUTTON_DOWN: {
-				cursor = (cursor + 1) % g_num_categories;
-			} break;
-
-			case WPAD_BUTTON_RIGHT: {
-				cursor = g_num_categories - 1;
-			} break;
-
-			case WPAD_BUTTON_LEFT: {
-				cursor = 0;
-			} break;
-
-			case WPAD_BUTTON_A: {
-				manage_category_menu(&g_categories[cursor]);
-			} break;
-
-			// case WPAD_BUTTON_B:
-			case WPAD_BUTTON_HOME: {
-				goto cleanup;
-			} break;
-		}
-
-	}
-
-cleanup:
 	free_all_categories();
 	stoppads();
 	NCD_Shutdown();
