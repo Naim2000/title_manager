@@ -18,6 +18,7 @@
 #include "menu.h"
 #include "ncd.h"
 #include "save.h"
+#include "identify.h"
 
 // snake case for snake year !!!
 
@@ -36,10 +37,10 @@ typedef struct title {
 } title_t;
 
 typedef struct title_category {
-	uint32_t      tid_hi;
-	char          name[64];
-	unsigned      num_titles;
-	struct title* title_list;
+	uint32_t tid_hi;
+	char     name[64];
+	unsigned num_titles;
+	title_t* title_list;
 } title_category_t;
 
 static title_category_t g_categories[] = {
@@ -80,7 +81,7 @@ static title_category_t g_categories[] = {
 };
 const unsigned g_num_categories = (sizeof(g_categories) / sizeof(title_category_t));
 
-void free_title(struct title* title) {
+void free_title(title_t* title) {
 	free(title->tmd_view);
 	free(title->ticket_views);
 
@@ -163,10 +164,10 @@ not_a_cios:
 	return 0;
 }
 
-int try_name_save_banner(struct title* title) {
-	int      ret, fd;
-	char     filepath[0x40] __attribute__((aligned(0x20))) = {};
-	uint32_t data[0x20] __attribute__((aligned(0x20)));
+int try_name_save_banner(title_t* title) {
+	int                  ret, fd;
+	char                 filepath[0x40] __attribute__((aligned(0x20))) = {};
+	struct banner_header banner __attribute__((aligned(0x20)));
 
 	ret = ES_GetDataDir(title->id, filepath);
 	if (ret < 0) {
@@ -181,27 +182,70 @@ int try_name_save_banner(struct title* title) {
 		return ret;
 	}
 
-	ret = ISFS_Read(fd, data, sizeof(data));
+	ret = ISFS_Read(fd, &banner, sizeof(banner));
 	ISFS_Close(fd);
-	if (ret != sizeof(data)) { // :v
+	if (ret != sizeof(banner)) { // :v
 		print_error("ISFS_Read(%016llx/banner.bin)", ret, title->id);
 		return ret;
 	}
 
-	if (data[0] != WIBN_MAGIC) {
+	if (banner.magic != WIBN_MAGIC) {
 		// ????
-		fprintf(stderr, "%016llx has an invalid banner?\n", title->id);
+		fprintf(stderr, "%016llx has an invalid save banner?\n", title->id);
 		return -1;
 	}
 
 	// Okay, do the thing.
-	const utf16_t* save_name = (const utf16_t*) &data[8];
-	utf16_to_utf8(save_name, 32, (utf8_t*)title->name, sizeof(title->name));
+	utf16_to_utf8(banner.game_title, 32, (utf8_t *)title->name, sizeof(title->name));
+	return 0;
+}
+
+#define IMET_MAGIC 0x494D4554
+typedef struct imet_header {
+	uint8_t  padding[0x40];
+	uint32_t magic; // IMET
+	uint32_t data_size;
+	uint32_t version;
+	uint32_t file_sizes[3];
+	uint32_t flags; //*
+	utf16_t  names[10][2][21]; // language, main/alt (??), text (duh)
+} imet_header;
+
+int try_name_channel_banner(title_t* title) {
+	int         ret, cfd;
+	imet_header imet __attribute__((aligned(0x20)));
+
+	ret = cfd = ES_OpenTitleContent(title->id, title->ticket_views, 0);
+	if (ret < 0) {
+		print_error("ES_OpenTitleContent(%016llx)", ret, title->id);
+		return ret;
+	}
+
+	ret = ES_SeekContent(cfd, 0x40, SEEK_SET);
+	if (ret != 0x40) {
+		print_error("ES_SeekContent(%016llx)", ret, title->id);
+		ES_CloseContent(cfd);
+		return ret;
+	}
+
+	ret = ES_ReadContent(cfd, (u8 *)&imet, sizeof(imet));
+	ES_CloseContent(cfd);
+	if (ret != sizeof(imet)) {
+		print_error("ES_ReadContent(%016llx)", ret, title->id);
+		return ret;
+	}
+
+	if (imet.magic != IMET_MAGIC) {
+		fprintf(stderr, "%016llx has an invalid channel banner?\n", title->id);
+		return -1;
+	}
+
+	utf16_to_utf8(imet.names[1][0], 21, (utf8_t *)title->name, sizeof(title->name));
 	return 0;
 }
 
 static int cmp_title(const void* a_, const void* b_) {
-	const struct title *a = a_, *b = b_;
+	const title_t *a = a_, *b = b_;
 
 	return a->tid_lo - b->tid_lo;
 }
@@ -323,18 +367,22 @@ int populate_title_categories(void) {
 
 					case 0x4843434A: strcpy(temp.name, "Set Personal Data"); break;
 
-					default: {
-						if (try_name_save_banner(&temp) < 0)
-							strcpy(temp.name, "<unknown>");
-					} break;
+					default:         strcpy(temp.name, "<unknown>"); break;
 				}
 			} break;
 
-			default: {
-				// TODO: Parse the channel's banner here.
-				if (try_name_save_banner(&temp) < 0)
-					sprintf(temp.name, "parse %08x's banner here", temp.tid_lo);
-			} break;
+			default:
+				if ((ret = try_name_save_banner(&temp)) == 0)
+					break;
+
+				if (temp.tid_hi != 0x00010000 || temp.tid_lo == 0x48415A41) {
+					if ((ret = try_name_channel_banner(&temp)) < 0)
+						sprintf(temp.name, "try_name_channel_banner() => %i", ret);
+				} else {
+					sprintf(temp.name, "try_name_save_banner() => %i", ret);
+				}
+
+				break;
 		}
 
 		// 4: Get a short name for it.
@@ -548,7 +596,11 @@ void manage_title_menu(const void* p) {
 			case WPAD_BUTTON_A: {
 				switch (cursor) {
 					case 0: {
-						uninstall_title(title);
+						puts("Press +/START to confirm. \nPress any other button to cancel.");
+						sleep(2);
+						if (wait_button(0) & WPAD_BUTTON_PLUS)
+							uninstall_title(title);
+
 					} break;
 					case 1: {
 						dump_title_save(title);
@@ -559,7 +611,7 @@ void manage_title_menu(const void* p) {
 				}
 
 
-				puts("Press any button to continue...");
+				puts("\nPress any button to continue...");
 				wait_button(0);
 				return;
 			} break;
@@ -639,6 +691,7 @@ int main(int argc, char* argv[]) {
 
 	fatInitDefault();
 
+	identify_sm();
 	populate_title_categories();
 
 	menu_item_list_t category_list = {
@@ -649,6 +702,7 @@ int main(int argc, char* argv[]) {
 		.select       = manage_category_menu,
 	};
 
+	wait_button(0);
 	ItemMenu(&category_list);
 
 	free_all_categories();
