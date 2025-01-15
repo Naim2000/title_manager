@@ -12,6 +12,7 @@
 #include "common.h"
 #include "save.h"
 #include "ncd.h"
+#include "identify.h"
 
 static int get_bin_mode(const char* filepath, uint8_t* permissions, uint8_t* attributes) {
 	uint32_t ownerID;
@@ -206,7 +207,6 @@ static void free_file_table(struct file_table* table) {
 
 int export_save(uint64_t title_id, FILE* fp) {
 	int              ret;
-	uint64_t         my_tid = -1;
 	uint32_t         device_id = -1;
 	char             data_path[ISFS_MAXPATH] __attribute__((aligned(0x20))) = {};
 	struct data_bin  save __attribute__((aligned(0x20))) = {};
@@ -217,103 +217,7 @@ int export_save(uint64_t title_id, FILE* fp) {
 	struct ecc_cert  ap_certificate __attribute__((aligned(0x20)));
 	struct ecc_cert  ng_certificate __attribute__((aligned(0x20)));
 
-	ret = ES_GetTitleID(&my_tid);
-	if (ret < 0 || my_tid != 0x0000000100000002) {
-		// Ok bet
-		my_tid = 0x0000000100000002;
-		ret = ES_GetStoredTMDSize(my_tid, &iv[2]);
-		if (ret < 0) {
-			print_error("ES_GetStoredTMDSize", ret);
-			return ret;
-		}
-
-		signed_blob *s_tmd = memalign32(iv[2]);
-		if (!s_tmd) {
-			print_error("memory allocation", 0);
-			return -1;
-		}
-
-		ret = ES_GetStoredTMD(my_tid, s_tmd, iv[2]);
-		if (ret < 0) {
-			print_error("ES_GetStoredTMD", ret);
-			free(s_tmd);
-			return ret;
-		}
-
-		int fd = ret = ISFS_Open("/ticket/00000001/00000002.tik", 1);
-		if (ret < 0) {
-			print_error("ISFS_Open", ret);
-			free(s_tmd);
-			return ret;
-		}
-
-		signed_blob *s_tik = memalign32(STD_SIGNED_TIK_SIZE);
-		if (!s_tik) {
-			print_error("memory allocation", 0);
-			ISFS_Close(fd);
-			free(s_tmd);
-			return ret;
-		}
-
-		ret = ISFS_Read(fd, s_tik, STD_SIGNED_TIK_SIZE);
-		ISFS_Close(fd);
-		if (ret != STD_SIGNED_TIK_SIZE) {
-			print_error("ISFS_Read", ret);
-			free(s_tmd);
-			free(s_tik);
-			return ret;
-		}
-
-		fd = ret = ISFS_Open("/sys/cert.sys", 1);
-		if (ret < 0) {
-			print_error("ISFS_Open", ret);
-			free(s_tmd);
-			free(s_tik);
-			return ret;
-		}
-
-		ret = ISFS_GetFileStats(fd, (fstats*)iv);
-		if (ret < 0) {
-			print_error("ISFS_GetFileStats", ret);
-			ISFS_Close(fd);
-			free(s_tmd);
-			free(s_tik);
-			return ret;
-		}
-
-		signed_blob *s_certs = memalign32(iv[0]);
-		if (!s_certs) {
-			print_error("memory allocation", 0);
-			ISFS_Close(fd);
-			free(s_tmd);
-			free(s_tik);
-		}
-
-		ret = ISFS_Read(fd, s_certs, iv[0]);
-		ISFS_Close(fd);
-		if (ret != iv[0]) {
-			print_error("ISFS_Read", ret);
-			free(s_tmd);
-			free(s_tik);
-			free(s_certs);
-			return ret;
-		}
-
-		// AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-		ret = ES_Identify(s_certs, iv[0], s_tmd, iv[2], s_tik, STD_SIGNED_TIK_SIZE, &iv[3]);
-		free(s_tmd);
-		free(s_tik);
-		free(s_certs);
-		 if (ret < 0) {
-			 my_tid = 0;
-			// print_error("ES_Identify(%016llx)", ret, my_tid);
-			// return ret;
-		}
-
-		ES_GetTitleID(&my_tid);
-	}
-
-	if (my_tid == 0x0000000100000002) {
+	if (identify_sm() == 0) {
 		ret = ES_SetUID(title_id);
 		if (ret < 0) {
 			print_error("ES_SetUID", ret);
