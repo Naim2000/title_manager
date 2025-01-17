@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <sys/stat.h>
 #include <ogc/ipc.h>
 #include <ogc/isfs.h>
 #include <ogc/es.h>
@@ -13,6 +14,9 @@
 #include "save.h"
 #include "ncd.h"
 #include "identify.h"
+
+__attribute__((aligned(0x40)))
+static unsigned char buffer[0x10000];
 
 static int get_bin_mode(const char* filepath, uint8_t* permissions, uint8_t* attributes) {
 	uint32_t ownerID;
@@ -71,11 +75,6 @@ static int build_file_table(const char* path, struct file_table* file_table) {
 	for (int i = 0; i < num_files; i++) {
 		uint32_t file_stats[2] __attribute__((aligned(0x20)));
 		struct file_entry temp = {};
-
-		if (!strcmp(file_name, "banner.bin")) {
-			file_name += 11;
-			continue;
-		}
 
 		sprintf(strrchr(file_path, 0), "/%s", file_name);
 		strcpy(temp.relative_path, file_path + 30);
@@ -150,7 +149,7 @@ static int write_file_table(const char* data_path, struct file_table* file_table
 			return -errno;
 		}
 
-		if (file.type == 2)
+		if (file.type == 2 || strcmp(entry->relative_path, "banner.bin") == 0)
 			continue;
 
 		printf("Processing %s (%#x, %uKiB)\n", entry->relative_path, entry->file_size, (entry->file_size + 0x3FF) >> 10);
@@ -163,9 +162,6 @@ static int write_file_table(const char* data_path, struct file_table* file_table
 
 		unsigned processed = 0;
 		while (processed < entry->file_size) {
-			// SHA engine can only process in 2^10 blocks (64 bytes/block). AES is 16 bytes/block, but ES didn't seem to mind here
-			__attribute__((aligned(0x40)))
-			unsigned char buffer[0x10000];
 			unsigned read = (entry->file_size - processed > sizeof(buffer)) ? sizeof(buffer) : entry->file_size - processed;
 
 			int ret = ISFS_Read(fd, buffer, read);
@@ -209,13 +205,13 @@ int export_save(uint64_t title_id, FILE* fp) {
 	int              ret;
 	uint32_t         device_id = -1;
 	char             data_path[ISFS_MAXPATH] __attribute__((aligned(0x20))) = {};
-	struct data_bin  save __attribute__((aligned(0x20))) = {};
-	struct bk_header bk_header __attribute__((aligned(0x40))) = {};
+	struct data_bin *save = (struct data_bin *)buffer; // just enough space is here, and i personally didn't like the idea of.... 0xF0C0.... 64 kilos on my stack
+	struct bk_header bk_header = {};
 	uint32_t         iv[4] __attribute__((aligned(0x20)));
 	uint32_t         hash[5] __attribute__((aligned(0x20)));
-	unsigned char    ap_signature[0x40] __attribute__((aligned(0x20)));
-	struct ecc_cert  ap_certificate __attribute__((aligned(0x20)));
-	struct ecc_cert  ng_certificate __attribute__((aligned(0x20)));
+	// you all can go here too
+	unsigned char   *ap_signature = buffer;
+	struct ecc_cert *certificates = (struct ecc_cert *)(buffer + SIG_SZ); // [NG, AP]
 
 	if (identify_sm() == 0) {
 		ret = ES_SetUID(title_id);
@@ -243,7 +239,7 @@ int export_save(uint64_t title_id, FILE* fp) {
 		return ret;
 	}
 
-	int banner_sz = ret = ISFS_Read(fd, (void*)&save.banner, sizeof(save.banner));
+	int banner_sz = ret = ISFS_Read(fd, (void*)&save->banner, sizeof(save->banner));
 	ISFS_Close(fd);
 	if (ret < FULL_BNR_MIN) {
 		print_error("ISFS_Read(banner.bin)", ret);
@@ -251,21 +247,21 @@ int export_save(uint64_t title_id, FILE* fp) {
 	}
 
 	// nocopy
-	save.banner.header.flags &= ~1;
+	save->banner.header.flags &= ~1;
 
-	save.header.title_id  = title_id;
-	save.header.banner_sz = banner_sz;
-	ret = get_bin_mode(data_path, &save.header.permissions, &save.header.attributes);
+	save->header.title_id  = title_id;
+	save->header.banner_sz = banner_sz;
+	ret = get_bin_mode(data_path, &save->header.permissions, &save->header.attributes);
 	if (ret < 0)
 		return ret;
 
-	memcpy(save.header.md5_sum, md5_blanker, sizeof(save.header.md5_sum));
-	mbedtls_md5_ret(save.encrypted_data, sizeof(save.encrypted_data), (unsigned char*) save.header.md5_sum);
+	memcpy(save->header.md5_sum, md5_blanker, sizeof(save->header.md5_sum));
+	mbedtls_md5_ret(save->encrypted_data, sizeof(struct data_bin), (unsigned char *)save->header.md5_sum);
 
 	memcpy(iv, sd_initial_iv, sizeof(sd_initial_iv));
-	ES_Encrypt(ES_KEY_SDCARD, (u8*)iv, save.encrypted_data, sizeof(save.encrypted_data), save.encrypted_data);
+	ES_Encrypt(ES_KEY_SDCARD, (u8*)iv, save->encrypted_data, sizeof(struct data_bin), save->encrypted_data);
 
-	if (!fwrite(save.encrypted_data, sizeof(save.encrypted_data), 1, fp)) {
+	if (!fwrite(save->encrypted_data, sizeof(struct data_bin), 1, fp)) {
 		print_error("fwrite", ret);
 		return -errno;
 	}
@@ -305,22 +301,22 @@ int export_save(uint64_t title_id, FILE* fp) {
 
 	mbedtls_sha1_finish_ret(&sha, (unsigned char *)hash);
 
-	ret = ES_GetDeviceCert((u8 *)&ng_certificate);
+	ret = ES_GetDeviceCert((u8 *)&certificates[0]);
 	if (ret < 0) {
 		print_error("ES_GetDeviceCert", ret);
 		goto foiled;
 	}
 
-	ret = ES_Sign((u8 *)hash, sizeof(hash), ap_signature, (u8 *)&ap_certificate);
+	//    vv This function is dumb
+	ret = ES_Sign((u8 *)hash, sizeof(hash), ap_signature, (u8 *)&certificates[1]);
 	if (ret < 0) {
 		print_error("ES_Sign", ret);
 		// return ret;
 	}
 
-	if (!fwrite(ap_signature,    sizeof(ap_signature),   1, fp) ||
-		!fwrite(&ng_certificate, sizeof(ng_certificate), 1, fp) ||
-		!fwrite(&ap_certificate, sizeof(ap_certificate), 1, fp) ||
-		!fwrite(table.entries,   0x80,                   1, fp)) // Filler cause idk what this 128 byte padding is for
+	if (!fwrite(ap_signature,  SIG_SZ,          1, fp) ||
+		!fwrite(certificates,  ECC_CERT_SZ * 2, 1, fp) ||
+		!fwrite(table.entries, 0x80,            1, fp)) // Filler cause idk what this 128 byte padding is for
 	{
 		print_error("fwrite", errno);
 		ret = -errno;
@@ -333,4 +329,82 @@ int export_save(uint64_t title_id, FILE* fp) {
 foiled:
 	free_file_table(&table);
 	return ret;
+}
+
+int extract_save(uint64_t title_id, const char* out_dir) {
+	int   ret, fd;
+	FILE *fp = NULL;
+	char  data_path[ISFS_MAXPATH] __attribute__((aligned(0x20)));
+	char  file_path[256];
+	char *file_path_in, *file_path_out = stpcpy(file_path, out_dir);
+
+	ret = ES_GetDataDir(title_id, data_path);
+	if (ret < 0) {
+		print_error("ES_GetDataDir(%016llx)", ret, title_id);
+		return ret;
+	}
+
+	file_path_in = strrchr(data_path, 0);
+
+	struct file_table table = {};
+	ret = build_file_table(data_path, &table);
+	if (ret < 0)
+		return ret;
+
+	for (int i = 0; i < table.num_entries; i++) {
+		struct file_entry* entry =  &table.entries[i];
+
+		sprintf(file_path_in,  "/%s", entry->relative_path);
+		sprintf(file_path_out, "/%s", entry->relative_path);
+
+		if (entry->type == 2) {
+			ret = mkdir(file_path, 0644);
+			if (ret < 0 && errno != EEXIST) {
+				perror(file_path_out);
+				return ret;
+			}
+
+			continue;
+		}
+
+		printf("Processing %s (%#x, %uKiB)\n", entry->relative_path, entry->file_size, (entry->file_size + 0x3FF) >> 10);
+		ret = fd = ISFS_Open(data_path, ISFS_OPEN_READ);
+		if (ret < 0) {
+			print_error("ISFS_Open", ret);
+			return ret;
+		}
+
+		fp = fopen(file_path, "wb");
+		if (!fp) {
+			ISFS_Close(fd);
+			perror(file_path_out);
+			return -errno;
+		}
+
+		unsigned processed = 0;
+		while (processed < entry->file_size) {
+			unsigned read = (entry->file_size - processed > sizeof(buffer)) ? sizeof(buffer) : entry->file_size - processed;
+
+			int ret = ISFS_Read(fd, buffer, read);
+			if (ret <= 0) {
+				print_error("ISFS_Read", ret);
+				break;
+			}
+
+			if (!fwrite(buffer, ret, 1, fp)) {
+				print_error("fwrite", errno);
+				ret = -errno;
+				break;
+			}
+
+			processed += ret;
+		}
+
+		ISFS_Close(fd);
+		fclose(fp);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
 }

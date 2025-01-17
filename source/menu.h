@@ -1,4 +1,7 @@
-typedef struct menu_item_list {
+void print_this_dumb_header(void);
+void print_this_dumb_line(void);
+
+typedef const struct menu_item_list {
 	void         (*print_header)(const void*, int cursor, int count);
 	const void*   header_ptr;
 	const void*   items;
@@ -9,6 +12,5 @@ typedef struct menu_item_list {
 	void         (*select)(const void *);
 } menu_item_list_t;
 
-void print_this_dumb_header(void);
-void print_this_dumb_line(void);
+
 void ItemMenu(menu_item_list_t* list);

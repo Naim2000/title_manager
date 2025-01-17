@@ -19,18 +19,17 @@
 #include "ncd.h"
 #include "save.h"
 #include "identify.h"
+#include "wiimenu.h"
 
 // snake case for snake year !!!
 
 typedef struct title {
 	union {
 		uint64_t id;
-		struct {
-			uint32_t tid_hi, tid_lo;
-		};
+		struct { uint32_t tid_hi, tid_lo; };
 	};
-	char      id_short[4];
 	char      name[256];
+	char      name_short[4];
 	tmd_view* tmd_view;
 	tikview*  ticket_views;
 	uint32_t  num_tickets;
@@ -76,7 +75,7 @@ static title_category_t g_categories[] = {
 
 	{
 		.tid_hi = 0x00010008,
-		.name   = "Hidden titles"
+		.name   = "Hidden titles",
 	},
 };
 const unsigned g_num_categories = (sizeof(g_categories) / sizeof(title_category_t));
@@ -118,31 +117,24 @@ bool get_content0(tmd_view* view, uint32_t* cid) {
 int try_name_ios(title_t* title) {
 	uint32_t slot     = title->tid_lo;
 	uint16_t revision = title->tmd_view->title_version;
-	uint32_t content  = 0;
-	char     filepath[0x40] __attribute__((aligned(0x20)));
-	int      ret, fd;
+	int      ret, cfd;
 	uint32_t data[0x10] __attribute__((aligned(0x20))) = {};
-
 
 	if (slot == 254 && (revision == 31337 || revision == 0xFF01)) {
 		strcpy(title->name, "BootMii IOS");
 		return 2;
 	}
 
-	if (!get_content0(title->tmd_view, &content))
-		goto not_a_cios;
-
-	sprintf(filepath, "/title/%08x/%08x/content/%08x.app", title->tid_hi, slot, content);
-	ret = fd = ISFS_Open(filepath, 1);
+	ret = cfd = ES_OpenTitleContent(title->id, title->ticket_views, 0);
 	if (ret < 0) {
-		print_error("ISFS_Open(%016llx/%08x.app)", ret, title->id, content);
+		print_error("ES_OpenTitleContent(%016llx)", ret, title->id);
 		goto not_a_cios;
 	}
 
-	ret = ISFS_Read(fd, data, sizeof(data));
-	ISFS_Close(fd);
+	ret = ES_ReadContent(cfd, (u8 *)data, sizeof(data));
+	ES_CloseContent(cfd);
 	if (ret != sizeof(data)) { //?
-		print_error("ISFS_Read(%016llx/%08x.app)", ret, title->id, content);
+		print_error("ES_ReadContent(%016llx)", ret, title->id);
 		goto not_a_cios;
 	}
 
@@ -150,7 +142,6 @@ int try_name_ios(title_t* title) {
 	if (data[0] == 0x1EE7C105 && data[1] == 0x00000001) {
 		const char* cios_name = (const char*) &data[4];
 		const char* cios_vers = (const char*) &data[8];
-
 		//                                                                    cIOS version        Base IOS
 		sprintf(title->name, "IOS %-3u (%s-v%u%s, base %u)", slot, cios_name, data[2], cios_vers, data[3]);
 		return 1;
@@ -214,6 +205,7 @@ typedef struct imet_header {
 int try_name_channel_banner(title_t* title) {
 	int         ret, cfd;
 	imet_header imet __attribute__((aligned(0x20)));
+	char        temp[64];
 
 	ret = cfd = ES_OpenTitleContent(title->id, title->ticket_views, 0);
 	if (ret < 0) {
@@ -241,6 +233,10 @@ int try_name_channel_banner(title_t* title) {
 	}
 
 	utf16_to_utf8(imet.names[1][0], 21, (utf8_t *)title->name, sizeof(title->name));
+	if (*imet.names[1][1]) {
+		utf16_to_utf8(imet.names[1][1], 21, (utf8_t *)temp, sizeof(temp));
+		sprintf(strrchr(title->name, 0), " (%s)", temp);
+	}
 	return 0;
 }
 
@@ -248,6 +244,80 @@ static int cmp_title(const void* a_, const void* b_) {
 	const title_t *a = a_, *b = b_;
 
 	return a->tid_lo - b->tid_lo;
+}
+
+bool try_name_short(uint64_t tid, char out[4]) {
+	bool ret = true;
+
+	if ((tid >> 32) == 0x00000001) {
+		memset(out, '-', 4);
+		return false;
+	} else for (int i = 0; i < 4; i++) {
+		char c = ((const char *)&tid)[i+4];
+		if (c > 0x20 && c < 0x7F) {
+			out[i] = c;
+		} else {
+			out[i] = '.';
+			ret = false;
+		}
+	}
+
+	return ret;
+}
+
+void try_name_title(title_t* title) {
+	int ret;
+
+	switch (title->tid_hi) {
+		case 0x00000001: { // System titles
+			// uint16_t revision = title->tmd_view->title_version;
+			switch (title->tid_lo) {
+				case 0x00000000: strcpy(title->name, "(Superuser ticket.)"); break;
+				case 0x00000001: strcpy(title->name, "(boot2? IOS doesn't let you install this as a normal title)"); break;
+				case 0x00000002: wiimenu_name_version(title->tmd_view->title_version, title->name); break;
+				case 0x00000100: strcpy(title->name, "BC"); break;
+				case 0x00000101: strcpy(title->name, "MIOS"); break;
+				case 0x00000200: strcpy(title->name, "BC-NAND"); break;
+				case 0x00000201: strcpy(title->name, "BC-WFS"); break;
+				default:
+					if (title->tid_lo < 0x100)
+						try_name_ios(title);
+					else
+						strcpy(title->name, "<unknown>");
+			}
+		} break;
+
+		case 0x00010008: { // Hidden titles.
+			switch (title->tid_lo) {
+				case 0x48414B45:
+				case 0x48414B50:
+				case 0x48414B4A: sprintf(title->name, "End-user license agreement (%c)", (char)(title->tid_lo & 0xFF)); break;
+
+				case 0x48414C45:
+				case 0x48414C50:
+				case 0x48414C4A: sprintf(title->name, "Region Select (%c)", (char)(title->tid_lo & 0xFF)); break;
+
+				case 0x4843434A: strcpy(title->name, "Set Personal Data"); break;
+
+				default:         strcpy(title->name, "<unknown>"); break;
+			}
+		} break;
+
+		default:
+			// Saves have bigger name fields
+			if ((ret = try_name_save_banner(title)) == 0)
+				break;
+
+			if (title->tid_hi != 0x00010000 || title->tid_lo == 0x48415A41 /* <- Dumb outlier */) {
+				if ((ret = try_name_channel_banner(title)) < 0)
+
+				sprintf(title->name, "try_name_channel_banner() => %i", ret);
+			} else {
+				sprintf(title->name, "try_name_save_banner() => %i", ret);
+			}
+
+			break;
+	}
 }
 
 int populate_title_categories(void) {
@@ -295,26 +365,24 @@ int populate_title_categories(void) {
 			continue;
 		}
 
-		// 1: Get it's TMD view.
 		ret = ES_GetTMDViewSize(temp.id, &tmd_view_size);
 		if (ret < 0) {
 			print_error("ES_GetTMDViewSize(%016llx)", ret, temp.id);
-			continue;
+			// continue;
+		} else {
+			temp.tmd_view = memalign32(tmd_view_size);
+			if (!temp.tmd_view) {
+				print_error("memory allocation", 0);
+				continue;
+			}
+
+			ret = ES_GetTMDView(temp.id, (u8 *)temp.tmd_view, tmd_view_size);
+			if (ret < 0) {
+				print_error("ES_GetTMDView(%016llx)", ret, temp.id);
+				goto we_gotta_go_bald;
+			}
 		}
 
-		temp.tmd_view = memalign32(tmd_view_size);
-		if (!temp.tmd_view) {
-			print_error("memory allocation", 0);
-			continue;
-		}
-
-		ret = ES_GetTMDView(temp.id, (u8 *)temp.tmd_view, tmd_view_size);
-		if (ret < 0) {
-			print_error("ES_GetTMDView(%016llx)", ret, temp.id);
-			goto we_gotta_go_bald;
-		}
-
-		// 2: Get it's ticket view(s) now.
 		ret = ES_GetNumTicketViews(temp.id, &temp.num_tickets);
 		if (ret < 0) {
 			print_error("ES_GetNumTicketViews(%016llx)", ret, temp.id);
@@ -335,74 +403,22 @@ int populate_title_categories(void) {
 			}
 		}
 
-		// 3: Get a name for it.
-		switch (temp.tid_hi) {
-			case 0x00000001: { // System titles
-				// uint16_t revision = temp.tmd_view->title_version;
-				switch (temp.tid_lo) {
-					case 0x00000000: strcpy(temp.name, "<Superuser ticket>"); break;
-					case 0x00000001: strcpy(temp.name, "<boot2 (not really)>"); break;
-					case 0x00000002: strcpy(temp.name, "Wii System Menu"); break; // TODO: Print the system menu version here cause we can do that
-					case 0x00000100: strcpy(temp.name, "BC"); break;
-					case 0x00000101: strcpy(temp.name, "MIOS"); break;
-					case 0x00000200: strcpy(temp.name, "BC-NAND"); break;
-					case 0x00000201: strcpy(temp.name, "BC-WFS"); break;
-					default:
-						if (temp.tid_lo < 0x100)
-							try_name_ios(&temp);
-						else
-							strcpy(temp.name, "<unknown>");
-				}
-			} break;
-
-			case 0x00010008: { // Hidden titles.
-				switch (temp.tid_lo) {
-					case 0x48414B45:
-					case 0x48414B50:
-					case 0x48414B4A: sprintf(temp.name, "End-user license agreement (%c)", (char)(temp.tid_lo & 0xFF)); break;
-
-					case 0x48414C45:
-					case 0x48414C50:
-					case 0x48414C4A: sprintf(temp.name, "Region Select (%c)", (char)(temp.tid_lo & 0xFF)); break;
-
-					case 0x4843434A: strcpy(temp.name, "Set Personal Data"); break;
-
-					default:         strcpy(temp.name, "<unknown>"); break;
-				}
-			} break;
-
-			default:
-				if ((ret = try_name_save_banner(&temp)) == 0)
-					break;
-
-				if (temp.tid_hi != 0x00010000 || temp.tid_lo == 0x48415A41) {
-					if ((ret = try_name_channel_banner(&temp)) < 0)
-						sprintf(temp.name, "try_name_channel_banner() => %i", ret);
-				} else {
-					sprintf(temp.name, "try_name_save_banner() => %i", ret);
-				}
-
-				break;
+		if (temp.tmd_view) {
+			try_name_title(&temp);
+		} else {
+			sprintf(temp.name, "<No title metadata?>");
 		}
 
-		// 4: Get a short name for it.
-		if (temp.tid_hi == 0x00000001) {
-			memset(temp.id_short, '-', 4);
-		} else for (int j = 0; j < 4; j++) {
-			char c = ((const char *)&temp.tid_lo)[j];
-			temp.id_short[j] = (c > 0x20 && c < 0x7F) ? c : '.';
-		}
+		try_name_short(temp.id, temp.name_short);
 
-
-		// 5: Actually put it in the category. Have a good pat on the back, %016llx.
 		title_t* tmp_list = reallocarray(target->title_list, target->num_titles + 1, sizeof(title_t));
 		if (!tmp_list) {
 			print_error("memory allocation", 0);
 			break;
 		}
 
-		tmp_list[target->num_titles++] = temp;
 		target->title_list = tmp_list;
+		target->title_list[target->num_titles++] = temp;
 		continue;
 
 we_gotta_go_bald:
@@ -418,6 +434,7 @@ we_gotta_go_bald:
 		qsort(cat->title_list, cat->num_titles, sizeof(title_t), cmp_title);
 	}
 
+	free(titles_raw);
 	return 0;
 }
 
@@ -441,7 +458,15 @@ title_t* find_title(uint64_t title_id) {
 int uninstall_title(const title_t* title) {
 	const char* no_touchy_reason = NULL;
 
+	if (is_dolphin() || !title->tmd_view)
+		goto clear;
+
 	if (title->tid_hi == 0x00000001) {
+		if (title->tid_lo == 0x00000002) {
+			// ?
+			exit(-1);
+		}
+
 		if (title->tid_lo == 0x00000001 ||
 		    title->tid_lo == 0x00000002 ||
 		    title->tid_lo == 0x00000100 ||
@@ -458,13 +483,13 @@ int uninstall_title(const title_t* title) {
 			goto no_touchy;
 		}
 
-		title_t* wii_system_menu = find_title(0x0000000100000002);
-		if (!wii_system_menu) {
+		title_t* wiimenu = find_title(0x0000000100000002);
+		if (!wiimenu) {
 			no_touchy_reason = "I can't find the Wii System Menu...?";
 			goto no_touchy;
 		}
 
-		if (title->id == wii_system_menu->tmd_view->sys_version) {
+		if (title->id == wiimenu->tmd_view->sys_version) {
 			no_touchy_reason = "The Wii System Menu runs on this IOS!!!!";
 			goto no_touchy;
 		}
@@ -474,9 +499,41 @@ int uninstall_title(const title_t* title) {
 			goto no_touchy;
 		}
 	}
+	else if (title->tid_hi == 0x0001008) {
+		uint32_t tid_superlow = title->tid_lo & ~0xFF;
+		if (tid_superlow != 0x48414B00 && tid_superlow != 0x48414C00)
+			goto clear;
 
+		title_t* wiimenu = find_title(0x0000000100000002);
+		if (!wiimenu) {
+			no_touchy_reason = "I can't find the Wii System Menu...?";
+			goto no_touchy;
+		}
+
+		if (wiimenu_version_is_official(wiimenu->tmd_view->title_version)) {
+			char region = wiimenu_region_table[wiimenu->tmd_view->title_version & 0x1F];
+			if (title->tid_lo == (tid_superlow ^ region)) {
+				goto no_touchy;
+			}
+		} else {
+			no_touchy_reason = "I can't determine the Wii System Menu's region!";
+			goto no_touchy;
+		}
+	} else if (title->tid_hi == 0x00010001) {
+		if (title->tid_lo == 0x48415858 ||
+			title->tid_lo == 0x4A4F4449 ||
+			title->tid_lo == 0xAF1BF516 ||
+			title->tid_lo == 0x4C554C5A ||
+			title->tid_lo == 0x4F484243)
+		{
+			no_touchy_reason = "Uhh...... use Data management?\nWhat are you trying to do here?";
+			goto no_touchy;
+		}
+	}
+
+clear:
 	int ret;
-	tikview tikview_buffer __attribute__((aligned(0x20)));
+	static tikview tikview_buffer __attribute__((aligned(0x20)));
 
 	puts("Removing contents...");
 	ret = ES_DeleteTitleContent(title->id);
@@ -498,6 +555,16 @@ int uninstall_title(const title_t* title) {
 	}
 
 	puts("OK!");
+/*
+	free(title->ticket_views);
+	title->ticket_views = NULL;
+	title->num_tickets  = 0;
+
+	free(title->tmd_view);
+	title->tmd_view = NULL;
+
+	strcpy(title->name, "<Uninstalled.>");
+*/
 	return 0;
 
 no_touchy:
@@ -509,8 +576,9 @@ no_touchy:
 }
 
 int dump_title_save(const title_t* title) {
+	int   ret;
 	FILE* fp = NULL;
-	char  filename[32];
+	char  file_name[32];
 
 	if (!(
 		title->tid_hi == 0x00010000 ||
@@ -518,27 +586,45 @@ int dump_title_save(const title_t* title) {
 		title->tid_hi == 0x00010004
 	)) {
 		puts("Does this even have a proper save?");
-		// return -1;
+		return -1;
 	}
 
-	if (memchr(title->id_short, '.', 4)) {
-		puts("id_short might have had an unprintable character");
+	if (!try_name_short(title->id, file_name)) {
+		puts("try_name_short() said no");
 		return -2;
 	}
 
-	sprintf(filename, "%.4s-data.bin", title->id_short);
-	fp = fopen(filename, "wb");
+	strcpy(file_name + 4, "-data.bin");
+	fp = fopen(file_name, "wb");
 	if (!fp) {
-		print_error("fopen(%s)", errno, filename);
+		perror(file_name);
 		return -3;
 	}
 
-	int ret = export_save(title->id, fp);
+	ret = export_save(title->id, fp);
 	fclose(fp);
 	if (ret < 0) {
 		// print_error("export_save", ret);
-		remove(filename);
+		remove(file_name);
 	}
+
+	return ret;
+}
+
+int extract_title_save(const title_t* title) {
+	int  ret;
+	char dir_path[64];
+
+	if (!try_name_short(title->id, dir_path))
+		sprintf(dir_path, "%016llx", title->id);
+
+	ret = mkdir(dir_path, 0644);
+	if (ret < 0 && errno != EEXIST) {
+		perror(dir_path);
+		return -errno;
+	}
+
+	ret = extract_save(title->id, dir_path);
 
 	return ret;
 }
@@ -548,11 +634,13 @@ void print_title_header(const void* p) {
 
 	print_this_dumb_header();
 	printf("Name:        %s\n", title->name);
-	printf("Title ID:    %08x-%08x (%.4s)\n", title->tid_hi, title->tid_lo, title->id_short);
+	printf("Title ID:    %08x-%08x (%.4s)\n", title->tid_hi, title->tid_lo, title->name_short);
 	// printf("Region:      %#04hhx\n", title->tmd_view->);
-	printf("Revision:    v%u (%#hx)\n", title->tmd_view->title_version, title->tmd_view->title_version);
-	if (title->tmd_view->sys_version >> 32 == 0x00000001)
-		printf("IOS version: IOS%u\n", (uint32_t)title->tmd_view->sys_version);
+	if (title->tmd_view) {
+		printf("Revision:    v%u (%#hx)\n", title->tmd_view->title_version, title->tmd_view->title_version);
+		if (title->tmd_view->sys_version >> 32 == 0x00000001)
+			printf("IOS version: IOS%u\n", (uint32_t)title->tmd_view->sys_version);
+	}
 
 	print_this_dumb_line();
 }
@@ -564,7 +652,7 @@ void manage_title_menu(const void* p) {
 	const int       num_options = 4;
 	const char* const options[] = { "Uninstall this title",
 	                                "Dump save data (data.bin)",
-	                                "Dump save data (extract) (X)",
+	                                "Dump save data (extract)",
 	                                "Dump title (.wad) (X)" };
 
 	while (true) {
@@ -602,9 +690,15 @@ void manage_title_menu(const void* p) {
 							uninstall_title(title);
 
 					} break;
+
 					case 1: {
 						dump_title_save(title);
 					} break;
+
+					case 2: {
+						extract_title_save(title);
+					} break;
+
 					default: {
 						puts("Unimplemented. Sorry.");
 					} break;
@@ -630,7 +724,7 @@ const char* name_title(const void* p, char buffer[256]) {
 	if (title->tid_hi == 0x00000001)
 		snprintf(buffer, 256, "[%08x] - %.128s", title->tid_lo, title->name);
 	else
-		snprintf(buffer, 256, "[%08x] (%.4s) - %.128s", title->tid_lo, title->id_short, title->name);
+		snprintf(buffer, 256, "[%08x] (%.4s) - %.128s", title->tid_lo, title->name_short, title->name);
 
 	return buffer;
 }
@@ -672,7 +766,7 @@ extern void __exception_setreload(int seconds);
 int main(int argc, char* argv[]) {
 	int ret;
 
-	__exception_setreload(5);
+	// __exception_setreload(5);
 
 	puts("Loading..."); // Wii mod lite reference !!!
 	if (!apply_patches()) {
@@ -702,7 +796,7 @@ int main(int argc, char* argv[]) {
 		.select       = manage_category_menu,
 	};
 
-	wait_button(0);
+	// wait_button(0);
 	ItemMenu(&category_list);
 
 	free_all_categories();
@@ -711,11 +805,4 @@ int main(int argc, char* argv[]) {
 	SHA_Close();
 	ISFS_Deinitialize();
 	return 0;
-}
-
-// __attribute__((destructor))
-void __reset_to_exit(void) {
-	puts("Press RESET to exit.");
-	while (! SYS_ResetButtonDown())
-		;
 }

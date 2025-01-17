@@ -17,3 +17,5 @@ bool patch_ios_verify();
 
 // Applies all patches.
 bool apply_patches();
+
+bool is_dolphin();

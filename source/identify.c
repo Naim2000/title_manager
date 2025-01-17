@@ -2,7 +2,9 @@
 #include <ogc/isfs.h>
 #include <ogc/es.h>
 
+#include "identify.h"
 #include "common.h"
+#include "libpatcher/libpatcher.h"
 
 int identify_sm(void) {
     int      ret;
@@ -11,7 +13,7 @@ int identify_sm(void) {
     fstats   file_status __attribute__((aligned(0x20)));
 
     ret = ES_GetTitleID(&title_id);
-	if (ret < 0 || title_id != 0x0000000100000002) {
+	if (ret < 0 || title_id != 0x0000000100000002 || is_dolphin()) {
 		// Ok bet
 		title_id = 0x0000000100000002;
 		ret = ES_GetStoredTMDSize(title_id, &tmd_size);
