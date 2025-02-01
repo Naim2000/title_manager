@@ -256,20 +256,20 @@ int export_save(uint64_t title_id, FILE* fp) {
 		return ret;
 
 	memcpy(save->header.md5_sum, md5_blanker, sizeof(save->header.md5_sum));
-	mbedtls_md5_ret(save->encrypted_data, sizeof(struct data_bin), (unsigned char *)save->header.md5_sum);
+	mbedtls_md5_ret(buffer, sizeof(struct data_bin), (unsigned char *)save->header.md5_sum);
 
 	memcpy(iv, sd_initial_iv, sizeof(sd_initial_iv));
-	ES_Encrypt(ES_KEY_SDCARD, (u8*)iv, save->encrypted_data, sizeof(struct data_bin), save->encrypted_data);
+	ES_Encrypt(ES_KEY_SDCARD, (u8*)iv, buffer, sizeof(struct data_bin), buffer);
 
-	if (!fwrite(save->encrypted_data, sizeof(struct data_bin), 1, fp)) {
+	if (!fwrite(buffer, sizeof(struct data_bin), 1, fp)) {
 		print_error("fwrite", ret);
 		return -errno;
 	}
 
 	*(strrchr(data_path, '/')) = 0;
 
-	bk_header.magic       = BK_HDR_MAGIC;
 	bk_header.header_size = BK_LISTED_SZ;
+	bk_header.magic       = BK_HDR_MAGIC;
 	bk_header.device_id   = device_id;
 	NCD_GetWirelessMacAddress(bk_header.mac_address);
 
@@ -287,7 +287,7 @@ int export_save(uint64_t title_id, FILE* fp) {
 	// OK, Bk header is all done
 	mbedtls_sha1_context sha;
 	mbedtls_sha1_starts_ret(&sha);
-	mbedtls_sha1_update_ret(&sha, (const unsigned char *)&bk_header, sizeof(struct bk_header));
+	mbedtls_sha1_update_ret(&sha, (const unsigned char *)&bk_header, sizeof(bk_header));
 
 	if (!fwrite(&bk_header, sizeof(struct bk_header), 1, fp)) {
 		print_error("fwrite", errno);

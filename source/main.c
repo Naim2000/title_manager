@@ -149,7 +149,7 @@ int try_name_ios(title_t* title) {
 
 not_a_cios:
 	sprintf(title->name, "IOS %-3u (v%u.%u)", slot, (revision >> 8) & 0xFF, revision & 0xFF);
-	if (revision == 0xFF00 || revision == 404)
+	if ((revision & 0xFF) == 0x00 || revision == 404)
 		strcpy(title->name + 8, "(Stub)");
 
 	return 0;
@@ -458,7 +458,7 @@ title_t* find_title(uint64_t title_id) {
 int uninstall_title(const title_t* title) {
 	const char* no_touchy_reason = NULL;
 
-	if (is_dolphin() || !title->tmd_view)
+	if (!title->tmd_view)
 		goto clear;
 
 	if (title->tid_hi == 0x00000001) {
@@ -499,10 +499,11 @@ int uninstall_title(const title_t* title) {
 			goto no_touchy;
 		}
 	}
-	else if (title->tid_hi == 0x0001008) {
+	else if (title->tid_hi == 0x00010008) {
 		uint32_t tid_superlow = title->tid_lo & ~0xFF;
-		if (tid_superlow != 0x48414B00 && tid_superlow != 0x48414C00)
+		if (tid_superlow != 0x48414B00 && tid_superlow != 0x48414C00) {
 			goto clear;
+		}
 
 		title_t* wiimenu = find_title(0x0000000100000002);
 		if (!wiimenu) {
@@ -511,7 +512,7 @@ int uninstall_title(const title_t* title) {
 		}
 
 		if (wiimenu_version_is_official(wiimenu->tmd_view->title_version)) {
-			char region = wiimenu_region_table[wiimenu->tmd_view->title_version & 0x1F];
+			char region = wiimenu_region_table[1][wiimenu->tmd_view->title_version & 0x1F];
 			if (title->tid_lo == (tid_superlow ^ region)) {
 				goto no_touchy;
 			}
@@ -637,7 +638,7 @@ void print_title_header(const void* p) {
 	printf("Title ID:    %08x-%08x (%.4s)\n", title->tid_hi, title->tid_lo, title->name_short);
 	// printf("Region:      %#04hhx\n", title->tmd_view->);
 	if (title->tmd_view) {
-		printf("Revision:    v%u (%#hx)\n", title->tmd_view->title_version, title->tmd_view->title_version);
+		printf("Revision:    v%hu (%#hx)\n", title->tmd_view->title_version, title->tmd_view->title_version);
 		if (title->tmd_view->sys_version >> 32 == 0x00000001)
 			printf("IOS version: IOS%u\n", (uint32_t)title->tmd_view->sys_version);
 	}

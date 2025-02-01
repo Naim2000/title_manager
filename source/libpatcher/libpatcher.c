@@ -9,9 +9,9 @@
 #define HW_AHBPROT 0x0d800064
 #define MEM2_PROT 0x0d8b420a
 
-#define AHBPROT_DISABLED ((read32(HW_AHBPROT) & 0x80000000) != 0) // All that matters to us is writing to MEM2_PROT right
-#define IOS_MEMORY_START (u32 *)0x933E0000
-#define IOS_MEMORY_END (u32 *)0x93FFFFFF
+#define AHBPROT_DISABLED (read32(HW_AHBPROT) != 0)
+#define IOS_MEMORY_START (void *)0x933E0000
+#define IOS_MEMORY_END (void *)0x94000000
 
 uint8_t in_dolphin = 0xFF;
 
@@ -40,11 +40,11 @@ bool is_dolphin() {
 
 void disable_memory_protections() { write16(MEM2_PROT, 2); }
 
-bool patch_memory_range(u32 *start, u32 *end, const u16 original_patch[],
+bool patch_memory_range(u16 *start, u16 *end, const u16 original_patch[],
                         const u16 new_patch[], u32 patch_size) {
     bool patched = false;
 
-    for (u32 *patchme = start; patchme < end; ++patchme) {
+    for (u16 *patchme = start; patchme < end; ++patchme) {
         if (memcmp(patchme, original_patch, patch_size) == 0) {
             // Copy our new patch over the existing, and flush.
             memcpy(patchme, new_patch, patch_size);
@@ -52,7 +52,7 @@ bool patch_memory_range(u32 *start, u32 *end, const u16 original_patch[],
 
             // While this realistically won't do anything for some parts,
             // it's worth a try...
-            ICInvalidateRange(patchme, patch_size);
+            // ICInvalidateRange(patchme, patch_size);
 
             patched = true;
         }
@@ -135,6 +135,10 @@ bool patch_ios_verify() {
     return patch_ios_range(ios_verify_old, ios_verify_patch, IOS_VERIFY_SIZE);
 }
 
+bool patch_es_delete_check() {
+    return patch_ios_range(delete_check_old, delete_check_patch, DELETE_CHECK_SIZE);
+}
+
 bool apply_patches() {
     bool ahbprot_fix = patch_ahbprot_reset();
     if (!ahbprot_fix) {
@@ -147,15 +151,19 @@ bool apply_patches() {
         return false;
     }
 
-    if (!patch_es_identify()) {
-        printf("unable to find and patch ES_Identify!\n");
-        return false;
-    }
-
     if (!patch_ios_verify()) {
         printf("unable to find and patch IOSC_VerifyPublicKeySign!\n");
         return false;
     }
 
+    if (!patch_es_identify()) {
+        printf("unable to find and patch ES_Identify!\n");
+        return false;
+    }
+
+    if (!patch_es_delete_check()) {
+        printf("unable to find & patch ES title delete check!\n");
+        return false;
+    }
     return true;
 }

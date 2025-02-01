@@ -91,17 +91,8 @@ struct bk_header {
 CHECK_STRUCT_SIZE(struct bk_header, 0x80);
 
 struct data_bin {
-	/* Encrypted */
-	union {
-		struct {
-			struct save_header header;
-			struct save_banner banner;
-		};
-		uint8_t encrypted_data[sizeof(struct save_header) + sizeof(struct save_banner)];
-	};
-
-	/* Unencrypted */
-	// struct bk_header   bk_header;
+	struct save_header header;
+	struct save_banner banner;
 };
 #pragma pack(pop)
 

@@ -40,11 +40,20 @@ const char* const wiimenu_version_table[7][20] =
 	{	"",		"",		"",		"",		"",		"",		"",		"",		"",		"",		"3.3",	"",		"3.5",	"",		"4.1",	"4.2",	"4.3",	"",		"",		""		},
 };
 
-const char wiimenu_region_table[] = {
-	[0] = 'J',
-	[1] = 'U',
-	[2] = 'E',
-	[6] = 'K',
+const char wiimenu_region_table[2][7] = {
+	{
+		[0] = 'J',
+		[1] = 'U',
+		[2] = 'E',
+		[6] = 'K',
+	},
+
+	{
+		[0] = 'J',
+		[1] = 'E',
+		[2] = 'P',
+		[6] = 'K',
+	}
 };
 
 bool wiimenu_version_is_official(uint16_t version) {
@@ -59,7 +68,7 @@ void wiimenu_name_version(uint16_t version, char* out) {
 	out = stpcpy(out, "Wii System Menu");
 
 	if (wiimenu_version_is_official(version)) {
-		sprintf(out, " (Ver. %s%c)", wiimenu_version_table[(version & 0x001F)][(version & 0xFFE0) >> 5], wiimenu_region_table[(version & 0x1F)]);
+		sprintf(out, " (Ver. %s%c)", wiimenu_version_table[(version & 0x001F)][(version & 0xFFE0) >> 5], wiimenu_region_table[0][(version & 0x1F)]);
 	} else {
 		sprintf(out, " (v%hu?)", version);
 	}

@@ -61,8 +61,12 @@ static const u16 ios_verify_patch[] = {
     0xb000  // nop
 };
 
+static const u16   delete_check_old[] = { 0xD800, 0x4A04 };
+static const u16 delete_check_patch[] = { 0xE000, 0x4A04 };
+
 // If a new IOS patch is added, please update accordingly.
 #define ISFS_PERMISSIONS_SIZE sizeof(isfs_permissions_patch)
 #define ES_IDENTIFY_SIZE sizeof(es_identify_patch)
 #define IOS_VERIFY_SIZE sizeof(ios_verify_patch)
 #define TICKET_CHECK_SIZE sizeof(ticket_check_patch)
+#define DELETE_CHECK_SIZE sizeof(delete_check_patch)
