@@ -29,36 +29,59 @@ enum {
 	WIBN_MAGIC = 0x5749424E,
 };
 
-#pragma pack(push, 1)
-struct save_header {
+#define IMET_MAGIC 0x494D4554
+typedef struct imet_header {
+	uint8_t  padding[0x40];
+	uint32_t magic; // IMET
+	uint32_t header_size;
+	uint32_t version;
+	uint32_t file_sizes[3];
+	uint32_t flags; //*
+	utf16_t  names[10][2][21]; // language, main/alt (??), text (duh)
+	uint8_t  padding2[0x24c];
+	uint32_t md5_sum[4];
+} imet_header;
+CHECK_STRUCT_SIZE(imet_header, 0x600);
+
+typedef struct save_header {
 	uint64_t title_id;
 	uint32_t banner_sz;
 	uint8_t  permissions;
 	uint8_t  attributes;
 	uint32_t md5_sum[4];
 	uint16_t unk2;
-};
+} __attribute__((packed)) save_header;
 CHECK_STRUCT_SIZE(struct save_header, 0x20);
 
-struct banner_header {
+typedef struct content_header {
+	uint64_t    title_id;
+	uint32_t    icon_sz;
+	uint32_t    header_md5[4];
+	uint32_t    icon_md5[4];
+	uint32_t    padding[5];
+	imet_header imet;
+} content_header;
+CHECK_STRUCT_SIZE(struct content_header, 0x640);
+
+typedef struct banner_header {
 	uint32_t magic;
 	uint32_t flags;
 	uint16_t anim_speed;
 	uint8_t  reserved[0x16];
 	utf16_t  game_title[0x20];
 	utf16_t  game_subtitle[0x20];
-};
+} banner_header;
 CHECK_STRUCT_SIZE(struct banner_header, 0xA0);
 
-struct save_banner {
+typedef struct save_banner {
 	struct banner_header header;
 
 	uint8_t banner[0x6000];
 	uint8_t icons[0x1200][8];
-};
+} save_banner;
 CHECK_STRUCT_SIZE(struct save_banner, FULL_BNR_MAX);
 
-struct file_header {
+typedef struct file_header {
 	uint32_t magic;		// 0x03ADF17E
 	uint32_t size;
 	uint8_t  permissions;
@@ -69,10 +92,10 @@ struct file_header {
 	uint32_t iv[4];
 	uint8_t  unknown[0x20];
 	uint8_t  data[];
-};
+} file_header;
 CHECK_STRUCT_SIZE(struct file_header, 0x80);
 
-struct bk_header {
+typedef struct bk_header {
 	uint32_t header_size;	// 0x70
 	uint32_t magic;			// 'Bk', 0x0001
 	uint32_t device_id;
@@ -87,14 +110,13 @@ struct bk_header {
 	uint8_t  padding[0x12];
 
 	struct file_header files[];
-};
+} bk_header;
 CHECK_STRUCT_SIZE(struct bk_header, 0x80);
 
-struct data_bin {
+typedef struct data_bin {
 	struct save_header header;
 	struct save_banner banner;
-};
-#pragma pack(pop)
+} data_header;
 
 struct file_entry {
 	char     relative_path[64 - 31];
@@ -111,3 +133,4 @@ struct file_table {
 
 int export_save(uint64_t title_id, FILE* out);
 int extract_save(uint64_t title_id, const char* out_dir);
+int export_content(uint64_t title_id, FILE* fp);

@@ -191,17 +191,6 @@ int try_name_save_banner(title_t* title) {
 	return 0;
 }
 
-#define IMET_MAGIC 0x494D4554
-typedef struct imet_header {
-	uint8_t  padding[0x40];
-	uint32_t magic; // IMET
-	uint32_t data_size;
-	uint32_t version;
-	uint32_t file_sizes[3];
-	uint32_t flags; //*
-	utf16_t  names[10][2][21]; // language, main/alt (??), text (duh)
-} imet_header;
-
 int try_name_channel_banner(title_t* title) {
 	int         ret, cfd;
 	imet_header imet __attribute__((aligned(0x20)));
@@ -630,6 +619,33 @@ int extract_title_save(const title_t* title) {
 	return ret;
 }
 
+int dump_title_content(const title_t* title) {
+	int   ret;
+	FILE* fp = NULL;
+	char  file_name[32];
+
+	if (!try_name_short(title->id, file_name)) {
+		puts("try_name_short() said no");
+		return -2;
+	}
+
+	strcpy(file_name + 4, "-content.bin");
+	fp = fopen(file_name, "wb");
+	if (!fp) {
+		perror(file_name);
+		return -3;
+	}
+
+	ret = export_content(title->id, fp);
+	fclose(fp);
+	if (ret < 0) {
+		// print_error("export_save", ret);
+		remove(file_name);
+	}
+
+	return ret;
+}
+
 void print_title_header(const void* p) {
 	const title_t* title = p;
 
@@ -654,6 +670,7 @@ void manage_title_menu(const void* p) {
 	const char* const options[] = { "Uninstall this title",
 	                                "Dump save data (data.bin)",
 	                                "Dump save data (extract)",
+	                                "Dump title (content.bin)",
 	                                "Dump title (.wad) (X)" };
 
 	while (true) {
@@ -698,6 +715,10 @@ void manage_title_menu(const void* p) {
 
 					case 2: {
 						extract_title_save(title);
+					} break;
+
+					case 3: {
+						dump_title_content(title);
 					} break;
 
 					default: {

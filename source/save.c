@@ -13,6 +13,7 @@
 #include "common.h"
 #include "save.h"
 #include "ncd.h"
+#include "u8.h"
 #include "identify.h"
 
 __attribute__((aligned(0x40)))
@@ -203,7 +204,6 @@ static void free_file_table(struct file_table* table) {
 
 int export_save(uint64_t title_id, FILE* fp) {
 	int              ret;
-	uint32_t         device_id = -1;
 	char             data_path[ISFS_MAXPATH] __attribute__((aligned(0x20))) = {};
 	struct data_bin *save = (struct data_bin *)buffer; // just enough space is here, and i personally didn't like the idea of.... 0xF0C0.... 64 kilos on my stack
 	struct bk_header bk_header = {};
@@ -211,19 +211,13 @@ int export_save(uint64_t title_id, FILE* fp) {
 	uint32_t         hash[5] __attribute__((aligned(0x20)));
 	// you all can go here too
 	unsigned char   *ap_signature = buffer;
-	struct ecc_cert *certificates = (struct ecc_cert *)(buffer + SIG_SZ); // [NG, AP]
+	struct ecc_cert *certificates = (struct ecc_cert *)(buffer + SIG_SZ); // [NG, AP] // WHERE IS MS!!!
 
 	if (identify_sm() == 0) {
 		ret = ES_SetUID(title_id);
 		if (ret < 0) {
 			print_error("ES_SetUID", ret);
 		}
-	}
-
-	ret = ES_GetDeviceID(&device_id);
-	if (ret < 0) {
-		print_error("ES_GetDeviceID", ret);
-		return ret;
 	}
 
 	ret = ES_GetDataDir(title_id, data_path);
@@ -270,9 +264,13 @@ int export_save(uint64_t title_id, FILE* fp) {
 
 	bk_header.header_size = BK_LISTED_SZ;
 	bk_header.magic       = BK_HDR_MAGIC;
-	bk_header.device_id   = device_id;
+	ret = ES_GetDeviceID(&bk_header.device_id);
 	NCD_GetWirelessMacAddress(bk_header.mac_address);
 
+	if (ret < 0) {
+		print_error("ES_GetDeviceID", ret);
+		return ret;
+	}
 	struct file_table table = {};
 	ret = build_file_table(data_path, &table);
 	if (ret < 0)
@@ -308,15 +306,13 @@ int export_save(uint64_t title_id, FILE* fp) {
 	}
 
 	//    vv This function is dumb
-	ret = ES_Sign((u8 *)hash, sizeof(hash), ap_signature, (u8 *)&certificates[1]);
+	ret = ES_Sign(hash, sizeof(hash), ap_signature, (signed_blob *)&certificates[1]);
 	if (ret < 0) {
 		print_error("ES_Sign", ret);
 		// return ret;
 	}
 
-	if (!fwrite(ap_signature,  SIG_SZ,          1, fp) ||
-		!fwrite(certificates,  ECC_CERT_SZ * 2, 1, fp) ||
-		!fwrite(table.entries, 0x80,            1, fp)) // Filler cause idk what this 128 byte padding is for
+	if (!fwrite(buffer, FULL_CERT_SZ, 1, fp))
 	{
 		print_error("fwrite", errno);
 		ret = -errno;
@@ -407,4 +403,273 @@ int extract_save(uint64_t title_id, const char* out_dir) {
 	}
 
 	return 0;
+}
+
+int export_content(uint64_t title_id, FILE* fp) {
+	int             ret, cfd = -1, cfdx = -1;
+	uint32_t        n_views = 0;
+	tikview        *p_views = NULL;
+	U8Context       ctx = {};
+	U8File          meta_icon = {};
+	content_header *header = (content_header *)buffer;
+	U8Header       *u8_header = (U8Header *)(buffer + sizeof(*header));
+	bk_header      *bk_header = (struct bk_header *)buffer;
+	signed_blob    *s_tmd = NULL;
+	void           *ptr_icon = NULL;
+	uint32_t        iv[4];
+
+
+	ret = ES_GetNumTicketViews(title_id, &n_views);
+	if (ret < 0) {
+		print_error("ES_GetNumTicketViews", ret);
+		goto exit;
+	}
+
+	p_views = memalign32(sizeof(tikview) * n_views);
+	if (!p_views) {
+		print_error("memory allocation", 0);
+		goto exit;
+	}
+
+	ret = ES_GetTicketViews(title_id, p_views, n_views);
+	if (ret < 0) {
+		free(p_views);
+		print_error("ES_GetTicketViews", ret);
+		goto exit;
+	}
+
+	ret = cfd = ES_OpenTitleContent(title_id, p_views, 0);
+	free(p_views);
+	if (ret < 0) {
+		print_error("ES_OpenTitleContent", ret);
+		goto exit;
+	}
+
+	ret = ES_ReadContent(cfd, buffer, sizeof(struct content_header));
+	if (ret != sizeof(struct content_header)) {
+		print_error("ES_ReadContent", ret);
+		goto exit;
+	}
+
+	// memset(buffer, 0, 0x40); // build tag was here
+	for (int i = 0; i < 0x40; i += 4)
+		memcpy(buffer + i, ":3c", 4);
+
+	ret = ES_ReadContent(cfd, (u8 *)u8_header, sizeof(U8Header));
+	if (ret != sizeof(U8Header)) {
+		print_error("ES_ReadContent", ret);
+		goto exit;
+	}
+
+	if (u8_header->magic != U8_MAGIC) {
+		fprintf(stderr, "What's up with this banner? (U8 header is invalid!)\n");
+		ret = -1;
+		goto exit;
+	}
+
+	unsigned full_hdr_size = u8_header->root_node_offset + u8_header->meta_size;
+	ES_SeekContent(cfd, -sizeof(U8Header), SEEK_CUR);
+	ret = ES_ReadContent(cfd, (u8 *)u8_header, full_hdr_size);
+	if (ret != full_hdr_size) {
+		print_error("ES_ReadContent", ret);
+		goto exit;
+	}
+
+	ret = U8Init(u8_header, &ctx);
+	if (ret != 0) {
+		print_error("U8Init", ret);
+		goto exit;
+	}
+
+	ret = U8OpenFile(&ctx, "/meta/icon.bin", &meta_icon);
+	if (ret != 0) {
+		print_error("U8OpenFile(%s)", ret, "/meta/icon.bin");
+		goto exit;
+	}
+
+	unsigned icon_size64 = align_up(meta_icon.size, 0x40);
+	ptr_icon = memalign32(icon_size64);
+	if (!ptr_icon) {
+		print_error("memory allocation", 0);
+		goto exit;
+	}
+	memset(ptr_icon, 0, icon_size64);
+
+	unsigned meta_offset = sizeof(*header) + meta_icon.offset;
+	ret = ES_SeekContent(cfd, meta_offset, SEEK_SET);
+	if (ret != meta_offset) {
+		print_error("ES_SeekContent(%#x)", ret, meta_offset);
+		goto exit;
+	}
+
+	ret = ES_ReadContent(cfd, ptr_icon, meta_icon.size);
+	ES_CloseContent(cfd);
+	cfd = -1;
+	if (ret != meta_icon.size) {
+		print_error("ES_ReadContent(%#x)", ret, meta_icon.size);
+		goto exit;
+	}
+	mbedtls_md5_ret(ptr_icon, icon_size64, (unsigned char *)header->icon_md5);
+
+	header->title_id = title_id;
+	header->icon_sz  = meta_icon.size;
+	memset(header->imet.md5_sum, 0, sizeof(header->imet.md5_sum));
+	memcpy(header->header_md5, md5_blanker, sizeof(header->header_md5));
+	mbedtls_md5_ret((const unsigned char *)header, sizeof(*header), (unsigned char *)header->header_md5);
+
+	// we are clear now
+	memcpy(iv, sd_initial_iv, sizeof(iv));
+	ret = ES_Encrypt(ES_KEY_SDCARD, iv, header, sizeof(content_header), header);
+	if (ret < 0) {
+		print_error("ES_Encrypt", ret);
+		goto exit;
+	}
+
+	memcpy(iv, sd_initial_iv, sizeof(iv));
+	ret = ES_Encrypt(ES_KEY_SDCARD, iv, ptr_icon, icon_size64, ptr_icon);
+	if (ret < 0) {
+		print_error("ES_Encrypt", ret);
+		goto exit;
+	}
+
+	if (!fwrite(header,   sizeof(*header), 1, fp)
+	||	!fwrite(ptr_icon, icon_size64,     1, fp))
+	{
+		print_error("fwrite", errno);
+		ret = -errno;
+		goto exit;
+	}
+
+	memset(bk_header, 0, sizeof(struct bk_header));
+
+	bk_header->header_size = BK_LISTED_SZ;
+	bk_header->magic       = BK_HDR_MAGIC;
+	bk_header->title_id    = title_id;
+	NCD_GetWirelessMacAddress(bk_header->mac_address); // for fun
+
+	ret = ES_GetDeviceID(&bk_header->device_id);
+	if (ret < 0) {
+		print_error("ES_GetDeviceID", ret);
+		goto exit;
+	}
+
+	ret = ES_GetStoredTMDSize(title_id, &bk_header->tmd_size);
+	if (ret < 0) {
+		print_error("ES_GetStoredTMDSize", ret);
+		goto exit;
+	}
+
+	s_tmd = memalign32(bk_header->tmd_size);
+	if (!s_tmd) {
+		print_error("memory allocation", 0);
+		goto exit;
+	}
+
+	// got real
+	ret = ES_ExportTitleInit(title_id, s_tmd, bk_header->tmd_size);
+	if (ret < 0) {
+		print_error("ES_ExportTitleInit", ret);
+		goto exit;
+	}
+
+	tmd* p_tmd = SIGNATURE_PAYLOAD(s_tmd);
+	// OK, let's work this out
+	for (int i = 0; i < p_tmd->num_contents; i++) {
+		tmd_content* con = &p_tmd->contents[i];
+
+		if (con->type & 0x8000) // We don't care
+			continue;
+
+		bk_header->included_contents[con->index >> 3] |= 1 << (con->index & 0x7);
+		bk_header->total_contents_size += align_up(con->size, 0x40);
+	}
+
+	unsigned tmd_size64 = align_up(bk_header->tmd_size, 0x40);
+	bk_header->total_size = tmd_size64 + bk_header->total_contents_size + FULL_CERT_SZ; // ?
+
+	// OK!
+	mbedtls_sha1_context sha;
+	mbedtls_sha1_starts_ret(&sha);
+	mbedtls_sha1_update_ret(&sha, (const unsigned char *)bk_header, sizeof(struct bk_header));
+	mbedtls_sha1_update_ret(&sha, (const unsigned char *)s_tmd, tmd_size64);
+
+	if (!fwrite(bk_header, sizeof(struct bk_header), 1, fp)
+	||	!fwrite(s_tmd, tmd_size64,  1, fp))
+	{
+		print_error("fwrite", errno);
+		ret = -errno;
+	}
+
+	for (int i = 0; i < p_tmd->num_contents; i++) {
+		tmd_content* con = &p_tmd->contents[i];
+
+		if (con->type & 0x8000) // We don't care
+			continue;
+
+		ret = cfdx = ES_ExportContentBegin(title_id, con->cid);
+		if (ret < 0) {
+			print_error("ES_ExportContentBegin(%08x)", ret, con->cid);
+			break;
+		}
+
+		unsigned processed = 0;
+		while (processed < (unsigned)con->size) {
+			unsigned process = (con->size - processed > sizeof(buffer)) ? sizeof(buffer) : con->size - processed;
+			unsigned process64 = align_up(process, 0x40);
+
+			ret = ES_ExportContentData(cfdx, buffer, process64);
+			if (ret < 0) {
+				print_error("ES_ExportContentData", ret);
+				break;
+			}
+
+			mbedtls_sha1_update_ret(&sha, buffer, process64);
+
+			if (!fwrite(buffer, process64, 1, fp)) {
+				print_error("fwrite", -errno);
+				ret = -errno;
+				break;
+			}
+
+			processed += process64;
+		}
+
+		ES_ExportContentEnd(cfdx);
+		if (ret < 0)
+			break;
+	}
+
+	unsigned char   *ap_signature = buffer;
+	struct ecc_cert *certificates = (struct ecc_cert *)(buffer + SIG_SZ);
+	unsigned char   *hash         = (unsigned char *)&certificates[2];
+
+	mbedtls_sha1_finish_ret(&sha, hash);
+
+	ret = ES_GetDeviceCert((u8 *)&certificates[0]);
+	if (ret < 0) {
+		print_error("ES_GetDeviceCert", ret);
+		goto exit;
+	}
+
+	ret = ES_Sign(hash, sizeof(sha1), ap_signature, (signed_blob *)&certificates[1]);
+	if (ret < 0) {
+		print_error("ES_Sign", ret);
+		goto exit;
+	}
+
+	if (!fwrite(buffer, FULL_CERT_SZ, 1, fp)) {
+		print_error("fwrite", -errno);
+		ret = -errno;
+	}
+
+exit:
+	free(ptr_icon);
+	free(s_tmd);
+
+	if (cfd >= 0)
+		ES_CloseContent(cfd);
+
+	ES_ExportTitleDone();
+
+	return ret;
 }
