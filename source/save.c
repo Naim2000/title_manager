@@ -171,7 +171,7 @@ static int write_file_table(const char* data_path, struct file_table* file_table
 				break;
 			}
 
-			ret = ES_Encrypt(ES_KEY_SDCARD, (u8*)iv, buffer, align_up(read, 0x40), buffer);
+			ret = ES_Encrypt(ES_KEY_SDCARD, iv, buffer, align_up(read, 0x40), buffer);
 			if (ret < 0) {
 				print_error("ES_Encrypt", ret);
 				break;
@@ -253,7 +253,7 @@ int export_save(uint64_t title_id, FILE* fp) {
 	mbedtls_md5_ret(buffer, sizeof(struct data_bin), (unsigned char *)save->header.md5_sum);
 
 	memcpy(iv, sd_initial_iv, sizeof(sd_initial_iv));
-	ES_Encrypt(ES_KEY_SDCARD, (u8*)iv, buffer, sizeof(struct data_bin), buffer);
+	ES_Encrypt(ES_KEY_SDCARD, iv, buffer, sizeof(struct data_bin), buffer);
 
 	if (!fwrite(buffer, sizeof(struct data_bin), 1, fp)) {
 		print_error("fwrite", ret);
@@ -486,6 +486,7 @@ int export_content(uint64_t title_id, FILE* fp) {
 		print_error("U8OpenFile(%s)", ret, "/meta/icon.bin");
 		goto exit;
 	}
+	printf("icon.bin size: %#x\n", meta_icon.size);
 
 	unsigned icon_size64 = align_up(meta_icon.size, 0x40);
 	ptr_icon = memalign32(icon_size64);
@@ -584,6 +585,7 @@ int export_content(uint64_t title_id, FILE* fp) {
 		bk_header->total_contents_size += align_up(con->size, 0x40);
 	}
 
+	printf("Title metadata size: %#x (%u bytes)\n", bk_header->tmd_size, bk_header->tmd_size);
 	unsigned tmd_size64 = align_up(bk_header->tmd_size, 0x40);
 	bk_header->total_size = tmd_size64 + bk_header->total_contents_size + FULL_CERT_SZ; // ?
 
@@ -606,6 +608,7 @@ int export_content(uint64_t title_id, FILE* fp) {
 		if (con->type & 0x8000) // We don't care
 			continue;
 
+		printf("Processing content %i (%08x, %#llx)\n", con->index, con->cid, con->size);
 		ret = cfdx = ES_ExportContentBegin(title_id, con->cid);
 		if (ret < 0) {
 			print_error("ES_ExportContentBegin(%08x)", ret, con->cid);

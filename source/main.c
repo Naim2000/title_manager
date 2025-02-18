@@ -101,19 +101,6 @@ void free_all_categories(void) {
 		free_category(&g_categories[i]);
 }
 
-bool get_content0(tmd_view* view, uint32_t* cid) {
-	for (int i = 0; i < view->num_contents; i++) {
-		tmd_view_content* p_content = &view->contents[i];
-
-		if (p_content->index == 0) {
-			*cid = p_content->cid;
-			return true;
-		}
-	}
-
-	return false;
-}
-
 int try_name_ios(title_t* title) {
 	uint32_t slot     = title->tid_lo;
 	uint16_t revision = title->tmd_view->title_version;
@@ -160,6 +147,11 @@ int try_name_save_banner(title_t* title) {
 	char                 filepath[0x40] __attribute__((aligned(0x20))) = {};
 	struct banner_header banner __attribute__((aligned(0x20)));
 
+	ret = ES_SetUID(title->id);
+	if (ret < 0) {
+		print_error("ES_SetUID(%016llx)", ret, title->id);
+	}
+
 	ret = ES_GetDataDir(title->id, filepath);
 	if (ret < 0) {
 		print_error("ES_GetDataDir(%016llx)", ret, title->id);
@@ -169,7 +161,7 @@ int try_name_save_banner(title_t* title) {
 	strcat(filepath, "/banner.bin");
 	ret = fd = ISFS_Open(filepath, 1);
 	if (ret < 0) {
-		if (ret != -106) print_error("ISFS_Open(%s)", ret, filepath);
+		if (ret != -106) print_error("ISFS_Open(%016llx/banner.bin)", ret, title->id);
 		return ret;
 	}
 
@@ -293,7 +285,7 @@ void try_name_title(title_t* title) {
 		} break;
 
 		default:
-			// Saves have bigger name fields
+			// Saves have bigger name fields.
 			if ((ret = try_name_save_banner(title)) == 0)
 				break;
 
@@ -365,7 +357,7 @@ int populate_title_categories(void) {
 				continue;
 			}
 
-			ret = ES_GetTMDView(temp.id, (u8 *)temp.tmd_view, tmd_view_size);
+			ret = ES_GetTMDView(temp.id, temp.tmd_view, tmd_view_size);
 			if (ret < 0) {
 				print_error("ES_GetTMDView(%016llx)", ret, temp.id);
 				goto we_gotta_go_bald;
@@ -568,7 +560,9 @@ no_touchy:
 int dump_title_save(const title_t* title) {
 	int   ret;
 	FILE* fp = NULL;
-	char  file_name[32];
+	char  name_short[4];
+	char  file_path[128];
+	char  tmp_path[32];
 
 	if (!(
 		title->tid_hi == 0x00010000 ||
@@ -579,23 +573,35 @@ int dump_title_save(const title_t* title) {
 		return -1;
 	}
 
-	if (!try_name_short(title->id, file_name)) {
+	if (!try_name_short(title->id, name_short)) {
 		puts("try_name_short() said no");
 		return -2;
 	}
 
-	strcpy(file_name + 4, "-data.bin");
-	fp = fopen(file_name, "wb");
+	sprintf(tmp_path,  "$~%.4sDATA.bin", name_short);
+	sprintf(file_path, "/private/wii/title/%.4s/data.bin", name_short);
+
+	struct stat st;
+	if (!stat(file_path, &st)) {
+		puts(file_path);
+		puts("File already exists! Overwrite?");
+
+		sleep(2);
+		puts("Press +/START to confirm. \nPress any other button to cancel.");
+		if (!(wait_button(0) & WPAD_BUTTON_PLUS))
+			return -1;
+	}
+
+	fp = fopen(tmp_path, "wb");
 	if (!fp) {
-		perror(file_name);
+		perror(tmp_path);
 		return -3;
 	}
 
 	ret = export_save(title->id, fp);
 	fclose(fp);
-	if (ret < 0) {
-		// print_error("export_save", ret);
-		remove(file_name);
+	if (ret == 0) {
+		rename(tmp_path, file_path);
 	}
 
 	return ret;
@@ -622,26 +628,39 @@ int extract_title_save(const title_t* title) {
 int dump_title_content(const title_t* title) {
 	int   ret;
 	FILE* fp = NULL;
-	char  file_name[32];
+	char  tmp_path[32];
+	char  file_path[128];
+	char  name_short[4];
 
-	if (!try_name_short(title->id, file_name)) {
+	if (!try_name_short(title->id, name_short)) {
 		puts("try_name_short() said no");
 		return -2;
 	}
 
-	strcpy(file_name + 4, "-content.bin");
-	fp = fopen(file_name, "wb");
+	sprintf(tmp_path,  "$~%.4sCONTENT.bin", name_short);
+	sprintf(file_path, "/private/wii/title/%.4s/content.bin", name_short);
+
+	struct stat st;
+	if (!stat(file_path, &st)) {
+		puts(file_path);
+		puts("File already exists! Overwrite?");
+
+		sleep(2);
+		puts("Press +/START to confirm. \nPress any other button to cancel.");
+		if (!(wait_button(0) & WPAD_BUTTON_PLUS))
+			return -1;
+	}
+
+	fp = fopen(tmp_path, "wb");
 	if (!fp) {
-		perror(file_name);
+		perror(tmp_path);
 		return -3;
 	}
 
 	ret = export_content(title->id, fp);
 	fclose(fp);
-	if (ret < 0) {
-		// print_error("export_save", ret);
-		remove(file_name);
-	}
+	if (ret == 0)
+		rename(tmp_path, file_path);
 
 	return ret;
 }
@@ -666,12 +685,12 @@ void manage_title_menu(const void* p) {
 	const title_t* title = p;
 
 	int                  cursor = 0;
-	const int       num_options = 4;
 	const char* const options[] = { "Uninstall this title",
 	                                "Dump save data (data.bin)",
 	                                "Dump save data (extract)",
 	                                "Dump title (content.bin)",
 	                                "Dump title (.wad) (X)" };
+	const int       num_options = sizeof(options) / sizeof(*options);
 
 	while (true) {
 		print_title_header(title);
@@ -786,9 +805,7 @@ const char* name_category(const void* p, char buffer[256]) {
 extern void __exception_setreload(int seconds);
 
 int main(int argc, char* argv[]) {
-	int ret;
-
-	// __exception_setreload(5);
+	__exception_setreload(15);
 
 	puts("Loading..."); // Wii mod lite reference !!!
 	if (!apply_patches()) {
@@ -799,16 +816,13 @@ int main(int argc, char* argv[]) {
 	initpads();
 	SHA_Init();
 	NCD_Init();
-	ret = ISFS_Initialize();
-	if (ret < 0) {
-		print_error("ISFS_Initialize", ret);
-		return ret;
-	}
-
+	ISFS_Initialize();
 	fatInitDefault();
 
 	identify_sm();
 	populate_title_categories();
+	puts("Press any button to continue...");
+	wait_button(0);
 
 	menu_item_list_t category_list = {
 		.items        = g_categories,
